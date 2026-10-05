@@ -64,3 +64,11 @@ def test_split_message_respects_discord_limit():
     assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
     assert all(len(c) <= 2000 for c in split_message("z" * 4500))
     assert split_message("short") == ["short"]
+
+
+def test_bot_channel_id_accepts_several_ids(monkeypatch):
+    from core import load_config
+    monkeypatch.setenv("BOT_CHANNEL_ID", "1556580599748108389, 1556584437339398144")
+    assert load_config()["channel_ids"] == {1556580599748108389, 1556584437339398144}
+    monkeypatch.setenv("BOT_CHANNEL_ID", "")
+    assert load_config()["channel_ids"] == set()

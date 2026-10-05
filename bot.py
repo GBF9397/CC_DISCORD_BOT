@@ -66,13 +66,13 @@ class ChatBot(discord.Client):
 
     async def on_ready(self):
         log.info("Logged in as %s (model: %s)", self.user, self.config["model"])
-        channel_id = self.config["channel_id"]
-        if channel_id is None:
+        if not self.config["channel_ids"]:
             log.info("No BOT_CHANNEL_ID set; answering @mentions and /ask only")
-        elif self.get_channel(channel_id) is None:
-            log.warning("BOT_CHANNEL_ID %s not found: wrong ID, or the bot can't view that channel", channel_id)
-        else:
-            log.info("Answering every message in #%s", self.get_channel(channel_id))
+        for channel_id in self.config["channel_ids"]:
+            if self.get_channel(channel_id) is None:
+                log.warning("BOT_CHANNEL_ID %s not found: wrong ID, or the bot can't view that channel", channel_id)
+            else:
+                log.info("Answering every message in #%s", self.get_channel(channel_id))
 
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars)",
@@ -87,7 +87,7 @@ class ChatBot(discord.Client):
             return
 
         mentioned = self.user in message.mentions
-        in_bot_channel = message.channel.id == self.config["channel_id"]
+        in_bot_channel = message.channel.id in self.config["channel_ids"]
         if not (mentioned or in_bot_channel):
             return
 

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from bot import ChatBot
 
-BOT_ID, CHANNEL, BOT_CHANNEL = 999, 10, 20
+BOT_ID, CHANNEL, BOT_CHANNEL, BOT_CHANNEL_2 = 999, 10, 20, 30
 
 
 class FakeChannel:
@@ -38,7 +38,7 @@ class FakeMessage:
 
 def make_bot(url, allowed=()):
     bot = ChatBot({"token": "x", "base_url": url, "model": "gemma4-12b-bionic-v2",
-                   "channel_id": BOT_CHANNEL, "allowed_users": set(allowed)})
+                   "channel_ids": {BOT_CHANNEL, BOT_CHANNEL_2}, "allowed_users": set(allowed)})
     bot._connection.user = SimpleNamespace(id=BOT_ID)
     return bot
 
@@ -57,6 +57,9 @@ async def test_replies_in_bot_channel_and_ignores_others(mock_api):
     msg = FakeMessage("hello", FakeChannel(BOT_CHANNEL))
     await bot.on_message(msg)
     assert msg.replies == ["echo: user1: hello"]
+    second = FakeMessage("hi", FakeChannel(BOT_CHANNEL_2))
+    await bot.on_message(second)
+    assert second.replies == ["echo: user1: hi"]
     quiet = FakeMessage("hello", FakeChannel(CHANNEL))
     await bot.on_message(quiet)
     assert quiet.replies == []
@@ -111,6 +114,7 @@ async def test_slash_commands_registered_and_work(mock_api):
 
 async def test_on_ready_warns_when_bot_channel_not_visible(mock_api, caplog):
     bot = make_bot(mock_api.base_url)
+    bot.config["channel_ids"] = {BOT_CHANNEL}
     bot.get_channel = lambda cid: None
     with caplog.at_level("INFO", logger="bot"):
         await bot.on_ready()

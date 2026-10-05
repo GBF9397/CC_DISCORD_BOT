@@ -102,11 +102,10 @@ def load_config():
     def ids(name):
         return {int(x) for x in os.getenv(name, "").replace(" ", "").split(",") if x}
 
-    channel = os.getenv("BOT_CHANNEL_ID", "").strip()
     return {
         "token": os.getenv("DISCORD_TOKEN", "").strip(),
         "base_url": os.getenv("LMSTUDIO_BASE_URL", "http://localhost:1234/v1"),
         "model": os.getenv("LMSTUDIO_MODEL", "gemma4-12b-bionic-v2"),
-        "channel_id": int(channel) if channel else None,
+        "channel_ids": ids("BOT_CHANNEL_ID"),
         "allowed_users": ids("ALLOWED_USER_IDS"),
     }
