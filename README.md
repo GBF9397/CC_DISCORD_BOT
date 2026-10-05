@@ -1,0 +1,30 @@
+# Discord bot on the local Gemma 4 Bionic model
+
+Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. Chat only: the model gets no tools.
+
+## How members use it
+- `/ask question:<text>` - any member can ask (slash command).
+- `@Bot <text>` - mention the bot in any channel.
+- Any message in the channel set as `BOT_CHANNEL_ID`.
+- `/reset` or `!reset` - forget this channel's conversation.
+
+The bot remembers the last 10 messages per channel (in RAM, trimmed to ~3000 tokens), answers one request at a time in order, shows "typing...", splits replies over 2000 characters, and says so politely if LM Studio is offline.
+
+## Setup (Windows)
+1. LM Studio: load `gemma4-12b-bionic-v2`, then `lms server start` (serves `http://localhost:1234/v1`).
+2. Discord Developer Portal: New Application > Bot > turn on **Message Content Intent** > Reset Token and copy it.
+3. OAuth2 > URL Generator: scopes `bot` and `applications.commands`; permissions Send Messages, Read Message History. Open the URL to invite the bot.
+4. In this folder:
+   ```
+   py -3.12 -m venv .venv
+   .venv\Scripts\activate
+   pip install -r requirements.txt
+   copy .env.example .env
+   ```
+   Paste the token into `.env` (never into a chat, never commit it; `.env` is gitignored).
+5. `python bot.py`
+
+Slash commands can take a few minutes to appear the first time.
+
+## Tests
+`pip install -r requirements-dev.txt` then `pytest`. The tests run the bot against a mock LM Studio server, so neither Discord nor LM Studio is needed.

@@ -1,0 +1,66 @@
+import asyncio
+
+from core import OFFLINE_MESSAGE, Brain, ChannelMemory, split_message
+
+
+def make_brain(url):
+    return Brain(url, "gemma4-12b-bionic-v2", ChannelMemory())
+
+
+async def test_reply_uses_content_not_reasoning(mock_api):
+    brain = make_brain(mock_api.base_url)
+    reply = await brain.ask(1, "Ep", "hello")
+    assert reply == "echo: Ep: hello"
+    assert "SECRET" not in reply
+    sent = mock_api.requests[0]
+    assert sent["model"] == "gemma4-12b-bionic-v2"
+    assert sent["temperature"] == 0.5 and sent["top_p"] == 0.95
+    assert sent["messages"][0]["role"] == "system"
+    assert "tools" not in sent
+
+
+async def test_memory_is_per_channel_and_resettable(mock_api):
+    brain = make_brain(mock_api.base_url)
+    await brain.ask(1, "Ep", "first")
+    await brain.ask(2, "Bo", "other channel")
+    await brain.ask(1, "Ep", "second")
+    history = mock_api.requests[-1]["messages"]
+    contents = [m["content"] for m in history]
+    assert "Ep: first" in contents and "Bo: other channel" not in contents
+    brain.memory.reset(1)
+    await brain.ask(1, "Ep", "after reset")
+    assert len(mock_api.requests[-1]["messages"]) == 2  # system + new message
+
+
+def test_memory_keeps_last_ten_and_trims_by_tokens():
+    mem = ChannelMemory(max_messages=10, max_tokens=50)
+    for i in range(15):
+        mem.add(1, "user", f"msg {i}")
+    assert [m["content"] for m in mem.get(1)][0] == "msg 5"
+    mem.add(1, "user", "x" * 400)  # ~100 tokens, over budget on its own
+    assert mem.get(1) == []
+
+
+async def test_requests_run_one_at_a_time(mock_api):
+    mock_api.delay = 0.1
+    brain = make_brain(mock_api.base_url)
+    replies = await asyncio.gather(*(brain.ask(c, "u", f"q{c}") for c in range(4)))
+    assert mock_api.max_active == 1
+    assert replies == [f"echo: u: q{c}" for c in range(4)]
+
+
+async def test_offline_gives_friendly_error_and_keeps_no_memory():
+    brain = make_brain("http://127.0.0.1:9/v1")  # nothing listens here
+    brain.client = brain.client.with_options(max_retries=0)
+    assert await brain.ask(1, "Ep", "hi") == OFFLINE_MESSAGE
+    assert brain.memory.get(1) == []
+
+
+def test_split_message_respects_discord_limit():
+    text = "\n".join("line %d %s" % (i, "y" * 90) for i in range(60))
+    chunks = split_message(text)
+    assert len(chunks) > 1
+    assert all(len(c) <= 2000 for c in chunks)
+    assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+    assert all(len(c) <= 2000 for c in split_message("z" * 4500))
+    assert split_message("short") == ["short"]
