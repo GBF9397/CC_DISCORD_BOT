@@ -75,6 +75,8 @@ class ChatBot(discord.Client):
             log.info("Answering every message in #%s", self.get_channel(channel_id))
 
     async def on_message(self, message):
+        log.info("Message in channel %s from user %s (%d chars)",
+                 message.channel.id, message.author.id, len(message.content))
         if message.author.bot or not self.allowed(message.author):
             return
         text = message.content.strip()
