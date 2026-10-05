@@ -1,4 +1,5 @@
 """Discord chat bot backed by the local Gemma 4 Bionic model in LM Studio."""
+import logging
 import os
 import sys
 
@@ -7,6 +8,8 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from core import Brain, ChannelMemory, load_config, split_message
+
+log = logging.getLogger("bot")
 
 
 def lower_priority():
@@ -62,7 +65,14 @@ class ChatBot(discord.Client):
         await self.tree.sync()
 
     async def on_ready(self):
-        print(f"Logged in as {self.user} (model: {self.config['model']})")
+        log.info("Logged in as %s (model: %s)", self.user, self.config["model"])
+        channel_id = self.config["channel_id"]
+        if channel_id is None:
+            log.info("No BOT_CHANNEL_ID set; answering @mentions and /ask only")
+        elif self.get_channel(channel_id) is None:
+            log.warning("BOT_CHANNEL_ID %s not found: wrong ID, or the bot can't view that channel", channel_id)
+        else:
+            log.info("Answering every message in #%s", self.get_channel(channel_id))
 
     async def on_message(self, message):
         if message.author.bot or not self.allowed(message.author):

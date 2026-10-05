@@ -107,3 +107,16 @@ async def test_slash_commands_registered_and_work(mock_api):
         response=SimpleNamespace(defer=defer), followup=SimpleNamespace(send=followup_send))
     await bot.tree.get_command("ask").callback(interaction, "what is 2+2?")
     assert sent == ["echo: member: what is 2+2?"]
+
+
+async def test_on_ready_warns_when_bot_channel_not_visible(mock_api, caplog):
+    bot = make_bot(mock_api.base_url)
+    bot.get_channel = lambda cid: None
+    with caplog.at_level("INFO", logger="bot"):
+        await bot.on_ready()
+    assert f"BOT_CHANNEL_ID {BOT_CHANNEL} not found" in caplog.text
+    bot.get_channel = lambda cid: "sad"
+    caplog.clear()
+    with caplog.at_level("INFO", logger="bot"):
+        await bot.on_ready()
+    assert "Answering every message in #sad" in caplog.text
