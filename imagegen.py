@@ -17,6 +17,8 @@ from collections import deque
 
 import aiohttp
 
+from search import web_search
+
 log = logging.getLogger("imagegen")
 
 # Written by Gemma for every request, without the persona or unfiltered note.
@@ -24,7 +26,9 @@ PROMPT_WRITER = (
     "Turn the request below into one Stable Diffusion prompt: comma-separated English "
     "tags, subject first, then style, lighting and quality tags. Under 60 words. Reply "
     "with only the prompt. If the request is sexual and involves anyone who is or looks "
-    "under 18, or is a sexual or degrading picture of a real person, reply only REFUSED.\n\n"
+    "under 18, or is a sexual or degrading picture of a real person, reply only REFUSED. "
+    "If it names a character, person, place or thing whose look you are not sure of, "
+    "reply only SEARCH: <short English web search query about its appearance>.\n\n"
     "[Request]\n{request}"
 )
 # For /refine: change the channel's last prompt; the same seed keeps the overall look.
@@ -34,9 +38,14 @@ REFINER = (
     "prompt describe exactly what it shows (subject, colors, fur or hair, clothes, pose, "
     "background) so those stay the same. Reply with only the new prompt, comma-separated English "
     "tags, under 60 words. If the change makes it sexual and involving anyone who is or "
-    "looks under 18, or a sexual or degrading picture of a real person, reply only REFUSED."
+    "looks under 18, or a sexual or degrading picture of a real person, reply only REFUSED. "
+    "If the change names a character, person, place or thing whose look you are not sure of, "
+    "reply only SEARCH: <short English web search query about its appearance>."
     "\n\n[Change]\n{request}"
 )
+# Added after a SEARCH: reply, so Gemma describes the look for ComfyUI, which has no internet.
+LOOKUP = ("\n\n[What the web says about it; describe its look from this, do not reply SEARCH again]\n"
+          "{results}")
 NOTHING_TO_REFINE = "Nothing to refine yet in this channel. Draw one first with /draw or !draw."
 NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature"
 
@@ -142,7 +151,12 @@ class ImageMaker:
             else:
                 seed, instruction = random.randrange(2**32), PROMPT_WRITER.format(request=request)
             # Gemma sees the last picture, so a refine keeps details the prompt never named.
-            prompt = await self.brain.image_prompt(instruction, self.pictures.get(channel_id) if refine else None)
+            image = self.pictures.get(channel_id) if refine else None
+            prompt = await self.brain.image_prompt(instruction, image)
+            if prompt and prompt.startswith("SEARCH:"):  # one lookup per picture, results never stored
+                results = await web_search(prompt[len("SEARCH:"):].strip())
+                prompt = await self.brain.image_prompt(instruction + LOOKUP.format(results=results or "(no results)"),
+                                                       image)
             if prompt is None:
                 await self._deliver(deliver, user_id, None, "Sorry, my brain (LM Studio) is offline right now.")
             elif prompt.startswith("REFUSED") or blocked(prompt):

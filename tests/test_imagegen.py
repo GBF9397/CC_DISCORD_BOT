@@ -303,3 +303,24 @@ async def test_gemma_is_told_how_members_can_draw(mock_api, comfy):
     plain = make_bot(mock_api.base_url)
     await plain.on_message(FakeMessage("你可以生成图吗", FakeChannel(BOT_CHANNEL)))
     assert "!draw" not in mock_api.requests[-1]["messages"][0]["content"]
+
+
+async def test_gemma_looks_up_a_named_character_before_writing_the_prompt(mock_api, comfy, events, monkeypatch):
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "m"})
+    replies = iter(["SEARCH: Frieren appearance", "1girl, elf, white hair, twin tails, white robe"])
+    asked, searched = [], []
+
+    async def fake_prompt(instruction, image=None):
+        asked.append(instruction)
+        return next(replies)
+
+    async def fake_search(query):
+        searched.append(query)
+        return "Frieren is an elf with long white hair in twin tails."
+
+    monkeypatch.setattr(maker.brain, "image_prompt", fake_prompt)
+    monkeypatch.setattr(imagegen, "web_search", fake_search)
+    assert await draw(maker, "画芙莉莲") == (PNG, None)
+    assert searched == ["Frieren appearance"]
+    assert "white hair in twin tails" in asked[1]
+    assert comfy.jobs[0]["2"]["inputs"]["text"] == "1girl, elf, white hair, twin tails, white robe"
