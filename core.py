@@ -195,14 +195,14 @@ class Brain:
                 return ""
         return " ".join((resp.choices[0].message.content or "").split())[:60]
 
-    async def image_prompt(self, instruction, image=None):
+    async def image_prompt(self, instruction, images=()):
         """One-off call for imagegen; the caller already holds self._lock. None if offline.
-        image: optional PNG bytes shown with the instruction, never stored."""
+        images: (bytes, mime type) pairs shown with the instruction, never stored."""
         content = instruction
-        if image:
-            content = [{"type": "text", "text": instruction},
-                       {"type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{base64.b64encode(image).decode()}"}}]
+        if images:
+            content = [{"type": "text", "text": instruction}] + [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
+                for data, mime in images]
         try:
             resp = await self.client.chat.completions.create(
                 model=self.model, temperature=0.7,

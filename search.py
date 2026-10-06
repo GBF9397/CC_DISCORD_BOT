@@ -3,6 +3,7 @@ import asyncio
 import logging
 import re
 
+import aiohttp
 from ddgs import DDGS
 
 log = logging.getLogger("bot")
@@ -32,3 +33,35 @@ async def web_search(query, max_results=5):
         log.warning("Web search failed: %s", type(e).__name__)  # the message can hold the query
         return ""
     return "\n\n".join(f"{r.get('title', '')}\n{r.get('href', '')}\n{r.get('body', '')}" for r in results)
+
+
+PICTURE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+MAX_PICTURE = 5_000_000  # bytes
+
+
+def _images(query, max_results):
+    return DDGS().images(query, safesearch="on", max_results=max_results)
+
+
+async def image_search(query, max_results=3):
+    """Pictures for the query as (bytes, mime type) pairs, held in RAM only; [] if the lookup fails."""
+    try:
+        results = await asyncio.to_thread(_images, query, max_results)
+    except Exception as e:
+        log.warning("Image search failed: %s", type(e).__name__)
+        return []
+    pictures = []
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as http:
+        for r in results:
+            for url in (r.get("image"), r.get("thumbnail")):  # the full picture, else the small one
+                try:
+                    async with http.get(url) as resp:
+                        if resp.status == 200 and resp.content_type in PICTURE_TYPES \
+                                and (resp.content_length or 0) <= MAX_PICTURE:
+                            data = await resp.read()
+                            if len(data) <= MAX_PICTURE:
+                                pictures.append((data, resp.content_type))
+                                break
+                except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                    pass
+    return pictures

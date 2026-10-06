@@ -312,8 +312,8 @@ async def test_gemma_looks_up_a_named_character_before_writing_the_prompt(mock_a
     replies = iter(["SEARCH: Frieren Sousou no Frieren", "1girl, elf, white hair, twin tails, white robe"])
     asked, searched = [], []
 
-    async def fake_prompt(instruction, image=None):
-        asked.append(instruction)
+    async def fake_prompt(instruction, images=()):
+        asked.append((instruction, images))
         return next(replies)
 
     async def fake_search(query):
@@ -321,10 +321,17 @@ async def test_gemma_looks_up_a_named_character_before_writing_the_prompt(mock_a
         return "Frieren is an elf with long white hair in twin tails."
 
     monkeypatch.setattr(maker.brain, "image_prompt", fake_prompt)
+    async def fake_images(query):
+        searched.append(query)
+        return [(b"JPEG", "image/jpeg")]
+
     monkeypatch.setattr(imagegen, "web_search", fake_search)
+    monkeypatch.setattr(imagegen, "image_search", fake_images)
     assert await draw(maker, "画芙莉莲") == (PNG, None)
-    assert searched == ["Frieren Sousou no Frieren character appearance hair outfit"]
-    assert "white hair in twin tails" in asked[1]
+    assert searched == ["Frieren Sousou no Frieren character appearance hair outfit",
+                        "Frieren Sousou no Frieren official art"]
+    assert "white hair in twin tails" in asked[1][0]
+    assert asked[1][1] == [(b"JPEG", "image/jpeg")]  # Gemma looks at the pictures found
     assert comfy.jobs[0]["2"]["inputs"]["text"] == "1girl, elf, white hair, twin tails, white robe"
 
 
