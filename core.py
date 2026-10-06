@@ -78,9 +78,10 @@ STICKER_NOTE = (
     "mood: put [sticker: name] at the very end of your reply. Usually don't. Available: {stickers}."
 )
 STICKER_TAG = re.compile(r"\s*\[sticker:\s*([^\]]+)\]", re.IGNORECASE)
-EMOJI_TAG = re.compile(r"(?<![<A-Za-z0-9_]):([\w~-]{2,32}):")  # may follow Chinese text
+# May follow Chinese text; full-width ：name： is accepted too, since Discord only reads ":".
+EMOJI_TAG = re.compile(r"(?<![<A-Za-z0-9_])[:：]([\w~-]{2,32})[:：]")
 # The model sometimes ends a reply with an emoji name but no colons, e.g. "...NPC。wat".
-TRAILING_NAME = re.compile(r"(?<![\w:])([\w~-]{2,32})$")
+TRAILING_NAME = re.compile(r"(?<![\w:：])([\w~-]{2,32})$")
 MAX_EXTRAS = 50  # names listed per kind, to keep the prompt small
 
 

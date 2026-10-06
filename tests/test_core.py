@@ -103,6 +103,7 @@ def test_apply_extras_converts_emoji_and_pulls_sticker():
     assert apply_extras("我不是NPC。pepe", emojis, {}) == ("我不是NPC。 <:pepe:1>", None)
     assert apply_extras("pepe is a frog", emojis, {}) == ("pepe is a frog", None)
     assert apply_extras("我是pepe", emojis, {}) == ("我是pepe", None)
+    assert apply_extras("好的：pepe：", emojis, {}) == ("好的 <:pepe:1>", None)
     assert apply_extras("好的:pepe:<a:x:2>", emojis, {}) == ("好的 <:pepe:1> <a:x:2>", None)
     assert apply_extras("ok [Sticker: catjam]", emojis, stickers) == ("ok", "STICKER")
     assert apply_extras("[sticker: catjam]", emojis, stickers) == ("", "STICKER")
