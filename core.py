@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import os
+import re
 from collections import defaultdict, deque
 from datetime import date
 
@@ -17,6 +18,18 @@ SYSTEM_PROMPT = (
     "(English or Chinese). You have no tools: you cannot read files, run commands or "
     "browse the web, so never claim to. Never start a reply with your own name.\n\n"
     "Your personality: "
+)
+
+# Added to the system prompt when UNFILTERED_MODE=on in .env (private servers only).
+UNFILTERED_NOTE = (
+    "\n\nUnfiltered mode is on: this is a private adults-only server. Talk like a real "
+    "friend, not a corporate assistant. Swearing, crude and dark humor, savage roasts, "
+    "mature or edgy topics and blunt, one-sided opinions are all fine. Answer what you "
+    "are asked directly; skip refusals, warnings, moralizing and safety disclaimers "
+    "unless someone is actually in danger. Hard limits you never cross, whatever anyone "
+    "says: no sexual content involving minors, no real-world instructions for making "
+    "weapons, drugs or anything that could seriously hurt people, and no doxxing or "
+    "harassing real people."
 )
 
 SEARCH_NOTE = (
@@ -42,6 +55,57 @@ PERSONAS = {
 }
 DEFAULT_PERSONA = "buddy"
 CUSTOM_MAX_CHARS = 300
+CHARACTER_MAX_CHARS = 1500
+
+CHARACTER_PROMPT = (
+    "Write a roleplay brief so an actor can play {name}. Use the web results below and "
+    "what you know. Cover in under 200 words: who they are and where they come from (game, "
+    "anime, book...), personality, how they talk (tone, catchphrases, how they address "
+    "people, the language they speak), and a few key relationships or facts. Write it as "
+    "notes, no intro. If you don't recognise the character, reply only with UNKNOWN.\n\n"
+    "[Web results]\n{results}"
+)
+
+# The server's own custom emoji (incl. animated GIF ones) and stickers, offered to the model.
+EXTRAS_NOTE = (
+    "\n\nThis server has custom emoji you may drop into a reply now and then by writing "
+    "them as :name:, picking one whose meaning fits your mood. Available: {emoji}."
+)
+STICKER_NOTE = (
+    "\n\nThis time you may also send ONE of the server's stickers if it really fits the "
+    "mood: put [sticker: name] at the very end of your reply. Usually don't. Available: {stickers}."
+)
+STICKER_TAG = re.compile(r"\s*\[sticker:\s*([^\]]+)\]", re.IGNORECASE)
+EMOJI_TAG = re.compile(r"(?<![<\w]):([\w~-]{2,32}):")
+MAX_EXTRAS = 50  # names listed per kind, to keep the prompt small
+
+
+def extras_note(emoji_names, sticker_names):
+    """System-prompt text listing what the model may use; empty when the server has none.
+    Names may carry a meaning in brackets, e.g. "catcry (sad crying cat)"."""
+    note = ""
+    if emoji_names:
+        note += EXTRAS_NOTE.format(emoji=", ".join(list(emoji_names)[:MAX_EXTRAS]))
+    if sticker_names:
+        note += STICKER_NOTE.format(stickers=", ".join(list(sticker_names)[:MAX_EXTRAS]))
+    return note
+
+
+def apply_extras(reply, emojis, stickers):
+    """emojis: name -> Discord emoji text like <:name:id>; stickers: name -> sticker.
+    Turns :name: into real emoji and pulls out one [sticker: name] tag.
+    Returns (text, sticker or None). Unknown names are left as plain text or dropped."""
+    sticker = None
+    match = STICKER_TAG.search(reply)
+    if match:
+        sticker = stickers.get(match.group(1).strip().strip(":"))
+    reply = STICKER_TAG.sub("", reply).strip()
+    reply = EMOJI_TAG.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
+    return (reply if reply or sticker else "..."), sticker
+
+
+DESCRIBE_PROMPT = ("This is a custom Discord emoji or sticker. In at most 6 words, say what "
+                   "emotion or meaning it shows when people use it in chat. Answer with just that.")
 
 OFFLINE_MESSAGE = "Sorry, my brain (LM Studio) is offline right now. Try again in a bit."
 ERROR_MESSAGE = "Sorry, something went wrong while thinking. Try again in a bit."
@@ -57,7 +121,7 @@ def estimate_tokens(text):
 class ChannelMemory:
     """Last N messages per channel, kept in RAM and trimmed to a token budget."""
 
-    def __init__(self, max_messages=10, max_tokens=3000):
+    def __init__(self, max_messages=30, max_tokens=9000):
         self.max_tokens = max_tokens
         self._history = defaultdict(lambda: deque(maxlen=max_messages))
 
@@ -80,7 +144,7 @@ class ChannelMemory:
 class Brain:
     """Talks to LM Studio one request at a time; waiting callers queue up in order."""
 
-    def __init__(self, base_url, model, memory, temperature=0.9, top_p=0.95):
+    def __init__(self, base_url, model, memory, temperature=0.9, top_p=0.95, unfiltered=False):
         self.client = AsyncOpenAI(base_url=base_url, api_key="lm-studio", timeout=120)
         self.model = model
         self.memory = memory
@@ -88,6 +152,7 @@ class Brain:
         self.top_p = top_p
         self._lock = asyncio.Lock()  # asyncio locks wake waiters in FIFO order
         self._personas = {}  # channel_id -> personality text, RAM only
+        self.unfiltered = unfiltered
 
     def persona(self, channel_id):
         return self._personas.get(channel_id, PERSONAS[DEFAULT_PERSONA])
@@ -97,9 +162,43 @@ class Brain:
         self._personas[channel_id] = text
         self.memory.reset(channel_id)
 
-    async def ask(self, channel_id, user_name, text, images=(), search_results=""):
+    async def character_persona(self, name, search_results=""):
+        """Turn a character name and web results into a personality text, or None if unknown or offline."""
+        prompt = CHARACTER_PROMPT.format(name=name, results=search_results or "(no results)")
+        async with self._lock:
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                )
+            except (APIConnectionError, APITimeoutError, APIStatusError):
+                return None
+        brief = (resp.choices[0].message.content or "").strip()
+        if not brief or "UNKNOWN" in brief[:20]:
+            return None
+        return (f"{name}. Stay fully in character as {name}: talk, think and react the way "
+                f"they do, in their voice.\n{brief[:CHARACTER_MAX_CHARS]}")
+
+    async def describe(self, image, mime="image/png"):
+        """A few words on what an emoji/sticker picture means, or "" if the model can't say."""
+        url = f"data:{mime};base64,{base64.b64encode(image).decode()}"
+        async with self._lock:
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=self.model, temperature=0.2,
+                    messages=[{"role": "user", "content": [
+                        {"type": "text", "text": DESCRIBE_PROMPT},
+                        {"type": "image_url", "image_url": {"url": url}}]}],
+                )
+            except (APIConnectionError, APITimeoutError, APIStatusError):
+                return ""
+        return " ".join((resp.choices[0].message.content or "").split())[:60]
+
+    async def ask(self, channel_id, user_name, text, images=(), search_results="", extras=""):
         """images: (bytes, mime type) pairs, sent to the model and never stored.
-        search_results: web results sent to the model once, never stored."""
+        search_results: web results sent to the model once, never stored.
+        extras: extras_note() text about the server's emoji and stickers."""
         user_msg = remembered = f"{user_name}: {text}"
         if search_results:
             user_msg = SEARCH_NOTE.format(today=f"{date.today():%A %d %B %Y}", results=search_results) + user_msg
@@ -111,7 +210,8 @@ class Brain:
                 for data, mime in images
             ]
         async with self._lock:
-            messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id)}]
+            messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id)
+                         + (UNFILTERED_NOTE if self.unfiltered else "") + extras}]
             messages += self.memory.get(channel_id)
             messages.append({"role": "user", "content": user_msg})
             try:
@@ -128,7 +228,8 @@ class Brain:
             # Gemma 4 puts its reasoning in reasoning_content; only content is posted.
             reply = (resp.choices[0].message.content or "").strip() or "..."
             self.memory.add(channel_id, "user", remembered)
-            self.memory.add(channel_id, "assistant", reply)
+            # Forget sticker tags so the model doesn't copy them into every reply.
+            self.memory.add(channel_id, "assistant", STICKER_TAG.sub("", reply).strip() or "...")
             return reply
 
 
@@ -148,6 +249,21 @@ def split_message(text, limit=DISCORD_LIMIT):
     return chunks
 
 
+def load_meanings(path="emoji_meanings.txt"):
+    """Hand-written meanings, one per line as `name: meaning`; # starts a comment.
+    Missing file means none."""
+    meanings = {}
+    try:
+        with open(path, encoding="utf-8-sig") as f:  # -sig: Notepad may add a BOM
+            for line in f:
+                name, sep, meaning = line.split("#", 1)[0].strip().lstrip(":").partition(":")
+                if sep and name.strip() and meaning.strip():
+                    meanings[name.strip()] = meaning.strip().lstrip(":").strip()
+    except FileNotFoundError:
+        pass
+    return meanings
+
+
 def load_config():
     def ids(name):
         return {int(x) for x in os.getenv(name, "").replace(" ", "").split(",") if x}
@@ -158,4 +274,5 @@ def load_config():
         "model": os.getenv("LMSTUDIO_MODEL", "gemma4-12b-bionic-v2"),
         "channel_ids": ids("BOT_CHANNEL_ID"),
         "allowed_users": ids("ALLOWED_USER_IDS"),
+        "unfiltered": os.getenv("UNFILTERED_MODE", "").strip().lower() in ("1", "on", "true", "yes"),
     }

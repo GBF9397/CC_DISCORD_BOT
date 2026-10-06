@@ -41,6 +41,14 @@ def test_memory_keeps_last_ten_and_trims_by_tokens():
     assert mem.get(1) == []
 
 
+def test_memory_defaults_to_thirty_messages():
+    mem = ChannelMemory()
+    for i in range(35):
+        mem.add(1, "user", f"a typical chat message number {i}")
+    kept = mem.get(1)
+    assert len(kept) == 30 and kept[0]["content"].endswith("number 5")
+
+
 async def test_requests_run_one_at_a_time(mock_api):
     mock_api.delay = 0.1
     brain = make_brain(mock_api.base_url)
@@ -85,3 +93,39 @@ async def test_persona_is_per_channel_and_switch_clears_memory(mock_api):
     await brain.ask(2, "Bo", "hello")
     assert mock_api.requests[1]["messages"][0]["content"].endswith(PERSONAS["pirate"])
     assert mock_api.requests[2]["messages"][0]["content"].endswith(PERSONAS[DEFAULT_PERSONA])
+
+
+def test_apply_extras_converts_emoji_and_pulls_sticker():
+    from core import apply_extras, extras_note
+    emojis, stickers = {"pepe": "<:pepe:1>"}, {"catjam": "STICKER"}
+    assert apply_extras("hi :pepe: at 12:30:00 <:pepe:1> :nope:", emojis, {}) == \
+        ("hi <:pepe:1> at 12:30:00 <:pepe:1> :nope:", None)
+    assert apply_extras("ok [Sticker: catjam]", emojis, stickers) == ("ok", "STICKER")
+    assert apply_extras("[sticker: catjam]", emojis, stickers) == ("", "STICKER")
+    assert apply_extras("[sticker: unknown]", emojis, stickers) == ("...", None)
+    assert extras_note({}, {}) == ""
+    assert "pepe" in extras_note(emojis, {}) and "sticker" not in extras_note(emojis, {})
+    assert "catjam" in extras_note({}, stickers)
+
+
+def test_load_meanings_reads_name_colon_meaning(tmp_path):
+    from core import load_meanings
+    f = tmp_path / "m.txt"
+    f.write_text("# my notes\ncatstare: speechless at nonsense\n:awk: awkward  # comment\nbad line\n",
+                 encoding="utf-8")
+    assert load_meanings(f) == {"catstare": "speechless at nonsense", "awk": "awkward"}
+    assert load_meanings(tmp_path / "missing.txt") == {}
+
+
+async def test_unfiltered_mode_is_off_by_default_and_loosens_prompt_when_on(mock_api, monkeypatch):
+    from core import UNFILTERED_NOTE, load_config
+    monkeypatch.delenv("UNFILTERED_MODE", raising=False)
+    assert load_config()["unfiltered"] is False
+    monkeypatch.setenv("UNFILTERED_MODE", "on")
+    assert load_config()["unfiltered"] is True
+    await make_brain(mock_api.base_url).ask(1, "Ep", "hi")
+    assert UNFILTERED_NOTE not in mock_api.requests[-1]["messages"][0]["content"]
+    brain = Brain(mock_api.base_url, "gemma4-12b-bionic-v2", ChannelMemory(), unfiltered=True)
+    await brain.ask(1, "Ep", "hi")
+    system = mock_api.requests[-1]["messages"][0]["content"]
+    assert UNFILTERED_NOTE in system and "minors" in system
