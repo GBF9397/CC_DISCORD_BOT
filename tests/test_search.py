@@ -68,3 +68,46 @@ async def test_image_with_time_sensitive_text_gets_both(mock_api, monkeypatch):
     assert calls == ["is this the latest model?"]
     parts = mock_api.requests[0]["messages"][-1]["content"]
     assert "Team A" in parts[0]["text"] and parts[1]["type"] == "image_url"
+
+
+def character_interaction(said):
+    async def defer(thinking=False):
+        pass
+    async def followup_send(text):
+        said.append(text)
+    from types import SimpleNamespace
+    return SimpleNamespace(user=SimpleNamespace(id=5, display_name="member"), channel_id=BOT_CHANNEL,
+                           response=SimpleNamespace(defer=defer), followup=SimpleNamespace(send=followup_send))
+
+
+async def test_persona_character_searches_and_roleplays(mock_api, monkeypatch):
+    calls = fake_search(monkeypatch, [{"title": "Ganyu", "href": "https://wiki.example/ganyu",
+                                       "body": "Ganyu is a gentle, hardworking adeptus secretary."}])
+    mock_api.reply = "Gentle half-qilin secretary of Liyue. Polite, shy, overworked."
+    bot = make_bot(mock_api.base_url)
+    await bot.on_message(FakeMessage("hi", FakeChannel(BOT_CHANNEL)))
+    said = []
+    await bot.tree.get_command("persona").callback(character_interaction(said), None, None, "Ganyu Genshin Impact")
+
+    assert calls == ["Ganyu Genshin Impact character personality speech style quotes"]
+    summary_request = mock_api.requests[-1]["messages"]
+    assert len(summary_request) == 1 and "adeptus secretary" in summary_request[0]["content"]
+    persona = bot.brain.persona(BOT_CHANNEL)
+    assert persona.startswith("Ganyu Genshin Impact. Stay fully in character") and "half-qilin" in persona
+    assert said == ["member switched me to **Ganyu Genshin Impact**. Memory of this channel cleared."]
+    assert bot.memory.get(BOT_CHANNEL) == []
+
+    mock_api.reply = None
+    await bot.on_message(FakeMessage("hello", FakeChannel(BOT_CHANNEL)))
+    assert "half-qilin" in mock_api.requests[-1]["messages"][0]["content"]
+
+
+async def test_persona_character_unknown_keeps_old_persona(mock_api, monkeypatch):
+    fake_search(monkeypatch, [])
+    mock_api.reply = "UNKNOWN"
+    bot = make_bot(mock_api.base_url)
+    before = bot.brain.persona(BOT_CHANNEL)
+    said = []
+    await bot.tree.get_command("persona").callback(character_interaction(said), None, None, "Zzxq")
+    assert bot.brain.persona(BOT_CHANNEL) == before
+    assert "couldn't find out enough about **Zzxq**" in said[0]

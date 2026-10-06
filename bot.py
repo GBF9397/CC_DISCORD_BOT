@@ -83,12 +83,28 @@ class ChatBot(discord.Client):
 
         @self.tree.command(name="persona", description="Change the bot's personality in this channel")
         @app_commands.describe(preset="Pick a ready-made personality",
-                               custom="Or describe your own, e.g. 'a grumpy cat who loves fish'")
+                               custom="Or describe your own, e.g. 'a grumpy cat who loves fish'",
+                               character="Or roleplay a known character, e.g. 'Ganyu Genshin Impact'")
         @app_commands.choices(preset=[app_commands.Choice(name=k, value=k) for k in PERSONAS])
         async def persona(interaction: discord.Interaction, preset: app_commands.Choice[str] = None,
-                          custom: str = None):
+                          custom: str = None, character: str = None):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            if character:
+                name = character.strip()[:100]
+                await interaction.response.defer(thinking=True)
+                log.info("Looking up character persona for channel %s", interaction.channel_id)
+                results = await web_search(f"{name} character personality speech style quotes")
+                text = await self.brain.character_persona(name, results)
+                if text is None:
+                    await interaction.followup.send(
+                        f"Sorry, I couldn't find out enough about **{name}**. "
+                        "Try adding the game or show, e.g. 'Ganyu Genshin Impact'.")
+                    return
+                self.brain.set_persona(interaction.channel_id, text)
+                await interaction.followup.send(
+                    f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
                 return
             if custom:
                 text, name = custom.strip()[:CUSTOM_MAX_CHARS], "custom"

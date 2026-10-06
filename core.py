@@ -42,6 +42,16 @@ PERSONAS = {
 }
 DEFAULT_PERSONA = "buddy"
 CUSTOM_MAX_CHARS = 300
+CHARACTER_MAX_CHARS = 1500
+
+CHARACTER_PROMPT = (
+    "Write a roleplay brief so an actor can play {name}. Use the web results below and "
+    "what you know. Cover in under 200 words: who they are and where they come from (game, "
+    "anime, book...), personality, how they talk (tone, catchphrases, how they address "
+    "people, the language they speak), and a few key relationships or facts. Write it as "
+    "notes, no intro. If you don't recognise the character, reply only with UNKNOWN.\n\n"
+    "[Web results]\n{results}"
+)
 
 OFFLINE_MESSAGE = "Sorry, my brain (LM Studio) is offline right now. Try again in a bit."
 ERROR_MESSAGE = "Sorry, something went wrong while thinking. Try again in a bit."
@@ -96,6 +106,24 @@ class Brain:
         """Switch this channel's personality and forget the chat, so the old voice doesn't linger."""
         self._personas[channel_id] = text
         self.memory.reset(channel_id)
+
+    async def character_persona(self, name, search_results=""):
+        """Turn a character name and web results into a personality text, or None if unknown or offline."""
+        prompt = CHARACTER_PROMPT.format(name=name, results=search_results or "(no results)")
+        async with self._lock:
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                )
+            except (APIConnectionError, APITimeoutError, APIStatusError):
+                return None
+        brief = (resp.choices[0].message.content or "").strip()
+        if not brief or "UNKNOWN" in brief[:20]:
+            return None
+        return (f"{name}. Stay fully in character as {name}: talk, think and react the way "
+                f"they do, in their voice.\n{brief[:CHARACTER_MAX_CHARS]}")
 
     async def ask(self, channel_id, user_name, text, images=(), search_results=""):
         """images: (bytes, mime type) pairs, sent to the model and never stored.
