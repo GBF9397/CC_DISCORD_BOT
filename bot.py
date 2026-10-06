@@ -1,4 +1,5 @@
 """Discord chat bot backed by the local Gemma 4 Bionic model in LM Studio."""
+import io
 import logging
 import os
 import random
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 
 from core import (CUSTOM_MAX_CHARS, PERSONAS, Brain, ChannelMemory, apply_extras, extras_note,
                   load_config, load_meanings, split_message)
+from imagegen import DrawError, ImageMaker
 from search import needs_search, web_search
 
 log = logging.getLogger("bot")
@@ -20,6 +22,7 @@ IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 STICKER_CHANCE = 0.2  # share of chat replies where the model is offered stickers
 CDN = "https://cdn.discordapp.com"
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):(\d+)>")
+DRAWING_NOTICE = "🎨 Drawing... I'm offline until it's done. 画画中，画完才回来。"
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 
 
@@ -50,11 +53,28 @@ class ChatBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.meanings = {}  # emoji/sticker id -> what Gemma thinks it means, RAM only
         self.examples = defaultdict(lambda: deque(maxlen=EXAMPLES_KEPT))  # id -> recent member uses, RAM only
+        self.images = None
+        if config.get("image_gen"):
+            self.images = ImageMaker(self.brain, config["comfyui_url"], config["sd_checkpoint"],
+                                     config["image_size"], config["lmstudio_context"])
         self._add_slash_commands()
 
     def allowed(self, user):
         allowed = self.config["allowed_users"]
         return not allowed or user.id in allowed
+
+    def drawing(self):
+        """While an image is being drawn Gemma is offline and the bot answers nobody."""
+        return self.images is not None and self.images.drawing
+
+    async def draw(self, request, notice):
+        """Returns (discord.File or None, error text or None). The picture stays in RAM."""
+        log.info("Drawing an image")
+        try:
+            png = await self.images.draw(request, notice)
+        except DrawError as e:
+            return None, str(e)
+        return discord.File(io.BytesIO(png), "image.png"), None
 
     async def answer(self, channel_id, user_name, text, images=(), search=False, guild=None, stickers=False):
         """Returns (reply text, sticker to send or None). Uses the server's own custom
@@ -124,6 +144,8 @@ class ChatBot(discord.Client):
     def _add_slash_commands(self):
         @self.tree.command(name="ask", description="Ask the bot something")
         async def ask(interaction: discord.Interaction, question: str):
+            if self.drawing():
+                return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -135,6 +157,8 @@ class ChatBot(discord.Client):
 
         @self.tree.command(name="search", description="Look something up on the web, then answer")
         async def search(interaction: discord.Interaction, question: str):
+            if self.drawing():
+                return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -146,6 +170,8 @@ class ChatBot(discord.Client):
 
         @self.tree.command(name="reset", description="Clear the bot's memory of this channel")
         async def reset(interaction: discord.Interaction):
+            if self.drawing():
+                return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -159,6 +185,8 @@ class ChatBot(discord.Client):
         @app_commands.choices(preset=[app_commands.Choice(name=k, value=k) for k in PERSONAS])
         async def persona(interaction: discord.Interaction, preset: app_commands.Choice[str] = None,
                           custom: str = None, character: str = None):
+            if self.drawing():
+                return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -190,6 +218,22 @@ class ChatBot(discord.Client):
             await interaction.response.send_message(
                 f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
 
+        if self.images is None:
+            return
+
+        @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until it's done)")
+        async def draw(interaction: discord.Interaction, request: str):
+            if self.drawing():
+                return
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            file, error = await self.draw(request, lambda: interaction.response.defer(thinking=True))
+            if file:
+                await interaction.followup.send(f"{interaction.user.display_name}: {request[:200]}", file=file)
+            else:
+                await interaction.followup.send(error)
+
     async def setup_hook(self):
         await self.tree.sync()
 
@@ -208,7 +252,7 @@ class ChatBot(discord.Client):
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars, %d attachments)",
                  message.channel.id, message.author.id, len(message.content), len(message.attachments))
-        if message.author.bot:
+        if message.author.bot or self.drawing():
             return
         self.note_usage(message)
         if not self.allowed(message.author):
@@ -228,6 +272,14 @@ class ChatBot(discord.Client):
         for tag in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
             text = text.replace(tag, "")
         text = text.strip()
+        if self.images and text.lower().startswith("!draw "):
+            file, error = await self.draw(text[len("!draw "):].strip(),
+                                          lambda: message.reply(DRAWING_NOTICE, mention_author=False))
+            if file:
+                await message.reply(file=file, mention_author=False)
+            else:
+                await message.reply(error, mention_author=False)
+            return
         search = text.lower().startswith("!search ")
         if search:
             text = text[len("!search "):].strip()

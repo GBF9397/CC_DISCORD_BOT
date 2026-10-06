@@ -195,6 +195,17 @@ class Brain:
                 return ""
         return " ".join((resp.choices[0].message.content or "").split())[:60]
 
+    async def image_prompt(self, instruction):
+        """One-off call for imagegen; the caller already holds self._lock. None if offline."""
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.model, temperature=0.7,
+                messages=[{"role": "user", "content": instruction}],
+            )
+        except (APIConnectionError, APITimeoutError, APIStatusError):
+            return None
+        return " ".join((resp.choices[0].message.content or "").split()) or None
+
     async def ask(self, channel_id, user_name, text, images=(), search_results="", extras=""):
         """images: (bytes, mime type) pairs, sent to the model and never stored.
         search_results: web results sent to the model once, never stored.
@@ -276,4 +287,9 @@ def load_config():
         "allowed_users": ids("ALLOWED_USER_IDS"),
         "unfiltered": os.getenv("UNFILTERED_MODE", "").strip().lower() in ("1", "on", "true", "yes"),
         "stickers": os.getenv("STICKERS", "").strip().lower() in ("1", "on", "true", "yes"),
+        "image_gen": os.getenv("IMAGE_GEN", "").strip().lower() in ("1", "on", "true", "yes"),
+        "comfyui_url": os.getenv("COMFYUI_URL", "http://127.0.0.1:8188"),
+        "sd_checkpoint": os.getenv("SD_CHECKPOINT", "").strip(),
+        "image_size": int(os.getenv("IMAGE_SIZE", "") or 1024),
+        "lmstudio_context": int(os.getenv("LMSTUDIO_CONTEXT", "") or 16384),
     }
