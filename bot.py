@@ -11,7 +11,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from core import (CUSTOM_MAX_CHARS, PERSONAS, Brain, ChannelMemory, apply_extras, extras_note,
-                  load_config, split_message)
+                  load_config, load_meanings, split_message)
 from search import needs_search, web_search
 
 log = logging.getLogger("bot")
@@ -64,16 +64,17 @@ class ChatBot(discord.Client):
             results = await web_search(text)
         emojis, sticker_map, labels, sticker_labels = {}, {}, [], []
         if guild is not None:
+            hand = load_meanings()  # read each time so edits work without a restart
             for e in guild.emojis:
                 if e.available:
                     emojis[e.name] = str(e)
-                    labels.append(self.label(e.id, e.name, self.meanings.get(e.id)))
+                    labels.append(self.label(e.id, e.name, hand.get(e.name) or self.meanings.get(e.id)))
             if stickers and random.random() < STICKER_CHANCE:
                 for s in guild.stickers:
                     if s.available:
                         sticker_map[s.name] = s
                         sticker_labels.append(self.label(
-                            s.id, s.name, self.meanings.get(s.id) or s.description, s.emoji))
+                            s.id, s.name, hand.get(s.name) or self.meanings.get(s.id) or s.description, s.emoji))
         reply = await self.brain.ask(channel_id, user_name, text, images, results,
                                      extras_note(labels, sticker_labels))
         return apply_extras(reply, emojis, sticker_map)
@@ -96,9 +97,11 @@ class ChatBot(discord.Client):
 
     async def learn_meanings(self, guild):
         """Show each new emoji/sticker picture to Gemma once so it knows what it means."""
-        items = [(e.id, f"{CDN}/emojis/{e.id}.png") for e in guild.emojis]  # .png = first frame of GIFs
-        items += [(s.id, s.url) for s in guild.stickers
-                  if s.format in (discord.StickerFormatType.png, discord.StickerFormatType.apng)]
+        hand = load_meanings()  # no need to guess these
+        items = [(e.id, f"{CDN}/emojis/{e.id}.png")  # .png = first frame of GIFs
+                 for e in guild.emojis if e.name not in hand]
+        items += [(s.id, s.url) for s in guild.stickers if s.name not in hand
+                  and s.format in (discord.StickerFormatType.png, discord.StickerFormatType.apng)]
         for item_id, url in items:
             if item_id in self.meanings:
                 continue

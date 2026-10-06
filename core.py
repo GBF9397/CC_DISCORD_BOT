@@ -207,6 +207,21 @@ def split_message(text, limit=DISCORD_LIMIT):
     return chunks
 
 
+def load_meanings(path="emoji_meanings.txt"):
+    """Hand-written meanings, one per line as `name: meaning`; # starts a comment.
+    Missing file means none."""
+    meanings = {}
+    try:
+        with open(path, encoding="utf-8-sig") as f:  # -sig: Notepad may add a BOM
+            for line in f:
+                name, sep, meaning = line.split("#", 1)[0].strip().lstrip(":").partition(":")
+                if sep and name.strip() and meaning.strip():
+                    meanings[name.strip()] = meaning.strip().lstrip(":").strip()
+    except FileNotFoundError:
+        pass
+    return meanings
+
+
 def load_config():
     def ids(name):
         return {int(x) for x in os.getenv(name, "").replace(" ", "").split(",") if x}

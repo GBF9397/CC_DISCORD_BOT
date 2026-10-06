@@ -98,3 +98,12 @@ def test_apply_extras_converts_emoji_and_pulls_sticker():
     assert extras_note({}, {}) == ""
     assert "pepe" in extras_note(emojis, {}) and "sticker" not in extras_note(emojis, {})
     assert "catjam" in extras_note({}, stickers)
+
+
+def test_load_meanings_reads_name_colon_meaning(tmp_path):
+    from core import load_meanings
+    f = tmp_path / "m.txt"
+    f.write_text("# my notes\ncatstare: speechless at nonsense\n:awk: awkward  # comment\nbad line\n",
+                 encoding="utf-8")
+    assert load_meanings(f) == {"catstare": "speechless at nonsense", "awk": "awkward"}
+    assert load_meanings(tmp_path / "missing.txt") == {}

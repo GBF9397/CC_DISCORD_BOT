@@ -16,6 +16,15 @@ Questions that sound time-sensitive (today, latest, news, price, weather, score,
 
 The bot remembers the last 10 messages per channel (in RAM, trimmed to ~3000 tokens), answers one request at a time in order, shows "typing...", splits replies over 2000 characters, and says so politely if LM Studio is offline.
 
+## Emoji meanings by hand (optional)
+If the bot misreads an emoji or sticker, create `emoji_meanings.txt` next to `bot.py` (it is gitignored) with one line per emoji, using its Discord name:
+```
+catstare: speechless at nonsense
+awkward_girl: awkward
+middlefinger: rude, playful f-you
+```
+Lines win over the bot's own guess and take effect on the next reply, no restart needed.
+
 ## Setup (Windows)
 1. LM Studio: load `gemma4-12b-bionic-v2`, then `lms server start` (serves `http://localhost:1234/v1`).
 2. Discord Developer Portal: New Application > Bot > turn on **Message Content Intent** > Reset Token and copy it.
