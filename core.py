@@ -16,7 +16,8 @@ SYSTEM_PROMPT = (
 )
 
 SEARCH_NOTE = (
-    "[Today is {today}. The bot searched the web for the message below. Use these "
+    "[Today is {today}. The bot already searched the web for the message below, so "
+    "you can answer with this live information; don't say you can't browse. Use these "
     "results for anything current and prefer them over what you remember; name the "
     "source site when it helps. If they don't answer it, say so.]\n\n{results}\n\n[Message]\n"
 )
