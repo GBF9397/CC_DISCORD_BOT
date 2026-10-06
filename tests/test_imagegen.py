@@ -43,6 +43,8 @@ class MockComfy:
             await ws.send_json({"type": "execution_error",
                                 "data": {"prompt_id": job, "exception_message": "out of memory"}})
             return
+        for step in range(1, 5):
+            await ws.send_json({"type": "progress", "data": {"value": step, "max": 4, "prompt_id": job}})
         await ws.send_json({"type": "executing", "data": {"node": "7", "prompt_id": job}})
         await ws.send_bytes(b"\0\0\0\1\0\0\0\2" + PNG)
         await ws.send_json({"type": "executing", "data": {"node": None, "prompt_id": job}})
@@ -324,3 +326,15 @@ async def test_gemma_looks_up_a_named_character_before_writing_the_prompt(mock_a
     assert searched == ["Frieren appearance"]
     assert "white hair in twin tails" in asked[1]
     assert comfy.jobs[0]["2"]["inputs"]["text"] == "1girl, elf, white hair, twin tails, white robe"
+
+
+async def test_drawing_notice_shows_the_progress_in_percent(mock_api, comfy, events):
+    mock_api.reply = "a cat"
+    bot = image_bot(mock_api.base_url, comfy.url)
+    msg = FakeMessage("!draw a cat", FakeChannel(BOT_CHANNEL))
+    await bot.on_message(msg)
+    notice = msg.sent
+    await finish(bot)
+    assert msg.replies[0] == DRAWING_NOTICE and msg.replies[1].filename == "image.png"
+    assert notice.edits == [f"{DRAWING_NOTICE}\n▓▓░░░░░░░░ 25%", f"{DRAWING_NOTICE}\n▓▓▓▓▓░░░░░ 50%",
+                            f"{DRAWING_NOTICE}\n▓▓▓▓▓▓▓░░░ 75%", f"{DRAWING_NOTICE}\n▓▓▓▓▓▓▓▓▓▓ 100%"]

@@ -44,8 +44,11 @@ REFINER = (
     "\n\n[Change]\n{request}"
 )
 # Added after a SEARCH: reply, so Gemma describes the look for ComfyUI, which has no internet.
-LOOKUP = ("\n\n[What the web says about it; describe its look from this, do not reply SEARCH again]\n"
-          "{results}")
+LOOKUP = ("\n\nNow write the prompt (do not reply SEARCH again). Draw only the subject the request "
+          "names, never a game screen, menu, logo or character list. For a character start with 1girl or "
+          "1boy, solo, its name and series, then its hair color and style, eye color, outfit and weapon "
+          "as the web text below describes them; ignore everything else in it.\n\n"
+          "[What the web says about it]\n{results}")
 NOTHING_TO_REFINE = "Nothing to refine yet in this channel. Draw one first with /draw or !draw."
 NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature"
 
@@ -77,7 +80,7 @@ class ImageMaker:
         self.comfy_dir = comfy_dir  # ComfyUI_windows_portable folder, to start it when it's off
         self.startup_wait = startup_wait
         self.drawing = False  # while True the bot only takes picture requests
-        self.queue = deque()  # (request, channel_id, user_id, deliver, refine, checkpoint), RAM only
+        self.queue = deque()  # (request, channel_id, user_id, deliver, refine, checkpoint, progress), RAM only
         self.waiting = set()  # members with a picture queued or being drawn
         self.last = {}  # channel_id -> (prompt, seed, checkpoint) of its last picture, RAM only
         self.styles = {}  # channel_id -> style name, RAM only
@@ -94,11 +97,12 @@ class ImageMaker:
         self.styles[channel_id] = name
         return name
 
-    def submit(self, request, channel_id, user_id, deliver, refine=False):
+    def submit(self, request, channel_id, user_id, deliver, refine=False, progress=None):
         """Queue a picture. Returns how many pictures are ahead (0 = starting now), or None if
         this member already has one waiting or being drawn. Raises DrawError if there is
         nothing to refine. deliver(png, error) is awaited
-        with the PNG bytes or an error text once this picture is done."""
+        with the PNG bytes or an error text once this picture is done; progress(percent),
+        if given, is awaited every 10% while ComfyUI draws it."""
         if user_id in self.waiting:
             return None
         if refine and channel_id not in self.last and not any(job[1] == channel_id for job in self.queue):
@@ -114,7 +118,7 @@ class ImageMaker:
             if first.lower() in self.checkpoints and rest.strip():
                 style, request = first.lower(), rest.strip()
             checkpoint = self.checkpoints[style]
-        self.queue.append((request, channel_id, user_id, deliver, refine, checkpoint))
+        self.queue.append((request, channel_id, user_id, deliver, refine, checkpoint, progress))
         if not self.drawing:
             self.drawing = True  # set before any await so the bot goes silent at once
             self._worker = asyncio.create_task(self._work())
@@ -141,7 +145,7 @@ class ImageMaker:
         """Gemma (still loaded) writes the prompt for each queued picture."""
         jobs = []
         while self.queue:
-            request, channel_id, user_id, deliver, refine, checkpoint = self.queue.popleft()
+            request, channel_id, user_id, deliver, refine, checkpoint, progress = self.queue.popleft()
             if refine and channel_id not in self.last:
                 await self._deliver(deliver, user_id, None, NOTHING_TO_REFINE)
                 continue
@@ -164,7 +168,7 @@ class ImageMaker:
                 await self._deliver(deliver, user_id, None, "Sorry, I won't draw that.")
             else:
                 self.last[channel_id] = (prompt, seed, checkpoint)  # a queued /refine builds on it
-                jobs.append((prompt, seed, checkpoint, channel_id, user_id, deliver))
+                jobs.append((prompt, seed, checkpoint, channel_id, user_id, deliver, progress))
         return jobs
 
     async def _draw_all(self, jobs):
@@ -172,9 +176,9 @@ class ImageMaker:
         log.info("Drawing %d picture(s); unloading %s from the GPU", len(jobs), self.brain.model)
         await self._lms("unload", self.brain.model)
         try:
-            for prompt, seed, checkpoint, channel_id, user_id, deliver in jobs:
+            for prompt, seed, checkpoint, channel_id, user_id, deliver, progress in jobs:
                 try:
-                    png = await self._comfy(prompt, seed, checkpoint)
+                    png = await self._comfy(prompt, seed, checkpoint, progress)
                 except DrawError as e:
                     await self._deliver(deliver, user_id, None, str(e))
                 else:
@@ -231,7 +235,7 @@ class ImageMaker:
             "7": {"class_type": "SaveImageWebsocket", "inputs": {"images": ["6", 0]}},
         }
 
-    async def _comfy(self, prompt, seed, checkpoint):
+    async def _comfy(self, prompt, seed, checkpoint, progress=None):
         client = uuid.uuid4().hex
         ws_url = self.comfy_url.replace("http", "ws", 1) + f"/ws?clientId={client}"
         try:
@@ -243,16 +247,16 @@ class ImageMaker:
                         # Only the error type: details can echo the prompt, and nothing members wrote is logged.
                         log.error("ComfyUI rejected the job: %s", str(body.get("error", {}).get("type"))[:100])
                         raise DrawError("Sorry, the image generator rejected the job.")
-                return await asyncio.wait_for(self._receive(ws, body["prompt_id"]), self.timeout)
+                return await asyncio.wait_for(self._receive(ws, body["prompt_id"], progress), self.timeout)
         except asyncio.TimeoutError:
             raise DrawError("Sorry, the drawing took too long.")
         except aiohttp.ClientError as e:
             log.error("ComfyUI unreachable: %s", e)
             raise DrawError("Sorry, the image generator (ComfyUI) is offline.")
 
-    async def _receive(self, ws, job):
+    async def _receive(self, ws, job, progress=None):
         """Collects the PNG the save node sends; binary messages from other nodes are previews."""
-        node, png = None, None
+        node, png, shown = None, None, 0
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.BINARY:
                 if node == "7":
@@ -267,6 +271,14 @@ class ImageMaker:
                     raise DrawError("Sorry, the drawing failed.")
                 if event["type"] == "execution_success":
                     break
+                if event["type"] == "progress" and progress and data.get("max"):
+                    percent = 100 * data["value"] // data["max"]
+                    if percent // 10 > shown // 10:  # every 10%, to stay under Discord's edit limit
+                        shown = percent
+                        try:
+                            await progress(percent)
+                        except Exception as e:
+                            log.warning("Could not show drawing progress: %s", type(e).__name__)
                 if event["type"] == "executing":
                     node = data.get("node")
                     if node is None:  # the whole job is done (older ComfyUI)

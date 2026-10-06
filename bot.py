@@ -83,8 +83,9 @@ class ChatBot(discord.Client):
         words = content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", "").split()
         return bool(self.images) and len(words) > 1 and words[0].lower() in ("!draw", "!refine")
 
-    def queue_picture(self, request, channel_id, user_id, refine, send):
-        """Queues a picture; send(text) / send(file=...) posts the result later.
+    def queue_picture(self, request, channel_id, user_id, refine, send, edit):
+        """Queues a picture; send(text) / send(file=...) posts the result later, and
+        edit(text) updates the notice with the drawing progress.
         Returns the notice to post now. The picture stays in RAM."""
         async def deliver(png, error):
             if png:
@@ -92,8 +93,11 @@ class ChatBot(discord.Client):
             else:
                 await send(error)
 
+        async def progress(percent):
+            await edit(f"{DRAWING_NOTICE}\n{'▓' * (percent // 10)}{'░' * (10 - percent // 10)} {percent}%")
+
         try:
-            ahead = self.images.submit(request, channel_id, user_id, deliver, refine)
+            ahead = self.images.submit(request, channel_id, user_id, deliver, refine, progress)
         except DrawError as e:
             return str(e)
         if ahead is None:
@@ -269,7 +273,10 @@ class ChatBot(discord.Client):
                 else:
                     await interaction.channel.send(f"{interaction.user.mention} {text}")
 
-            notice = self.queue_picture(request, interaction.channel_id, interaction.user.id, refine, send)
+            async def edit(text):
+                await interaction.edit_original_response(content=text)
+
+            notice = self.queue_picture(request, interaction.channel_id, interaction.user.id, refine, send, edit)
             await interaction.response.send_message(notice, ephemeral=not notice.startswith("🎨"))  # refusals only to the asker
 
         @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until all pictures are done)")
@@ -342,9 +349,15 @@ class ChatBot(discord.Client):
                 else:
                     await message.reply(text, mention_author=False)
 
+            notice_message = None
+
+            async def edit(text):
+                if notice_message:
+                    await notice_message.edit(content=text)
+
             notice = self.queue_picture(text[len(command):].strip(), message.channel.id, message.author.id,
-                                        command == "!refine", send)
-            await message.reply(notice, mention_author=False)
+                                        command == "!refine", send, edit)
+            notice_message = await message.reply(notice, mention_author=False)
             return
         search = text.lower().startswith("!search ")
         if search:
