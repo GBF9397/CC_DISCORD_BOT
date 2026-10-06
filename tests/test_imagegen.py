@@ -5,7 +5,8 @@ import pytest_asyncio
 from aiohttp import web
 
 import imagegen
-from imagegen import DrawError, ImageMaker, blocked
+from bot import ALREADY_QUEUED, DRAWING_NOTICE, QUEUED_NOTICE
+from imagegen import NOTHING_TO_REFINE, ImageMaker, blocked
 from tests.test_bot import BOT_CHANNEL, BOT_CHANNEL_2, FakeChannel, FakeMessage, make_bot
 
 PNG = b"\x89PNG fake"
@@ -94,10 +95,26 @@ def image_bot(api_url, comfy_url):
     return bot
 
 
+async def draw(maker, request, user=1, refine=False):
+    """Queue one picture, wait for the queue to empty, return (png, error)."""
+    got = []
+
+    async def deliver(png, error):
+        got.append((png, error))
+
+    maker.submit(request, BOT_CHANNEL, user, deliver, refine)
+    await maker._worker
+    return got[0]
+
+
+async def finish(bot):
+    await bot.images._worker
+
+
 async def test_draw_takes_turns_on_the_gpu(mock_api, comfy, events):
     mock_api.reply = "a cat, watercolor"
     maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "model.safetensors"})
-    assert await maker.draw("画一只猫", BOT_CHANNEL) == PNG
+    assert await draw(maker, "画一只猫") == (PNG, None)
     assert events == ["lms unload gemma4-12b-bionic-v2", "comfy draw", "comfy free",
                       "lms load gemma4-12b-bionic-v2 --context-length 16384"]
     job = comfy.jobs[0]
@@ -110,11 +127,8 @@ async def test_draw_takes_turns_on_the_gpu(mock_api, comfy, events):
 
 async def test_gemma_comes_back_when_comfyui_is_offline(mock_api, events):
     maker = ImageMaker(make_bot(mock_api.base_url).brain, "http://127.0.0.1:9", {"anime": "m"})
-    try:
-        await maker.draw("a cat", BOT_CHANNEL)
-        raise AssertionError("expected DrawError")
-    except DrawError as e:
-        assert "offline" in str(e)
+    png, error = await draw(maker, "a cat")
+    assert png is None and "offline" in error
     assert events == ["lms unload gemma4-12b-bionic-v2",
                       "lms load gemma4-12b-bionic-v2 --context-length 16384"]
     assert not maker.drawing
@@ -123,12 +137,16 @@ async def test_gemma_comes_back_when_comfyui_is_offline(mock_api, events):
 async def test_refused_request_never_unloads_gemma(mock_api, comfy, events):
     mock_api.reply = "REFUSED"
     maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "m"})
-    try:
-        await maker.draw("something bad", BOT_CHANNEL)
-        raise AssertionError("expected DrawError")
-    except DrawError:
-        pass
+    assert await draw(maker, "something bad") == (None, "Sorry, I won't draw that.")
     assert events == [] and comfy.jobs == []
+
+
+async def test_comfyui_error_is_reported_and_gemma_comes_back(mock_api, comfy, events):
+    comfy.fail = True
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "m"})
+    assert await draw(maker, "a cat") == (None, "Sorry, the drawing failed.")
+    assert events[-2:] == ["comfy free", "lms load gemma4-12b-bionic-v2 --context-length 16384"]
+    assert not maker.drawing
 
 
 def test_blocked_needs_both_sexual_and_minor_words():
@@ -138,25 +156,48 @@ def test_blocked_needs_both_sexual_and_minor_words():
     assert not blocked("nude marble statue, museum")
 
 
-async def test_bot_is_silent_while_drawing(mock_api, comfy, events):
-    comfy.delay = 0.5
+async def test_queue_one_per_member_and_silent_to_chat(mock_api, comfy, events):
+    comfy.delay = 0.3
     bot = image_bot(mock_api.base_url, comfy.url)
     ch = FakeChannel(BOT_CHANNEL)
-    request = FakeMessage("!draw a cat", ch)
-    drawing = asyncio.create_task(bot.on_message(request))
-    await asyncio.sleep(0.2)
-    insist = FakeMessage("answer me NOW", ch, author_id=2)
-    await bot.on_message(insist)
-    await bot.on_message(FakeMessage("!draw a dog", ch, author_id=3))
-    await drawing
-    assert insist.replies == []
-    assert len(comfy.jobs) == 1
-    assert request.replies[0].startswith("🎨")
-    assert request.replies[1].filename == "image.png"
-    assert request.replies[1].fp.read() == PNG
+    first = FakeMessage("!draw a cat", ch, author_id=1)
+    await bot.on_message(first)
+    assert first.replies == [DRAWING_NOTICE]
+    second = FakeMessage("!draw a dog", ch, author_id=2)
+    await bot.on_message(second)
+    assert second.replies == [QUEUED_NOTICE.format(ahead=1)]
+    again = FakeMessage("!draw a fox", ch, author_id=2)
+    await bot.on_message(again)
+    assert again.replies == [ALREADY_QUEUED]
+    chat = FakeMessage("answer me NOW", ch, author_id=3)
+    await bot.on_message(chat)
+    await finish(bot)
+    assert chat.replies == []
+    assert len(comfy.jobs) == 2
+    assert first.replies[1].filename == "image.png" and first.replies[1].fp.read() == PNG
+    assert second.replies[1].filename == "image.png"
+    # One trip off the GPU for both pictures.
+    assert events == ["lms unload gemma4-12b-bionic-v2", "comfy draw", "comfy draw", "comfy free",
+                      "lms load gemma4-12b-bionic-v2 --context-length 16384"]
     after = FakeMessage("hi", ch)
     await bot.on_message(after)
     assert after.replies == ["echo: user1: hi"]
+
+
+async def test_member_can_queue_again_once_their_picture_is_done(mock_api, comfy, events):
+    comfy.delay = 0.2
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    await bot.on_message(FakeMessage("!draw a cat", ch, author_id=1))
+    await bot.on_message(FakeMessage("!draw a dog", ch, author_id=2))
+    while bot.images.waiting != {2}:  # member 1's picture is posted, member 2's still drawing
+        await asyncio.sleep(0.01)
+    late = FakeMessage("!draw a bird", ch, author_id=1)
+    await bot.on_message(late)
+    assert late.replies == [QUEUED_NOTICE.format(ahead=1)]
+    await finish(bot)
+    assert len(comfy.jobs) == 3
+    assert late.replies[1].filename == "image.png"
 
 
 async def test_draw_off_by_default(mock_api):
@@ -173,12 +214,14 @@ async def test_refine_changes_the_last_prompt_and_keeps_the_seed(mock_api, comfy
     ch = FakeChannel(BOT_CHANNEL)
     early = FakeMessage("!refine make it night", ch)
     await bot.on_message(early)
-    assert early.replies == ["Nothing to refine yet in this channel. Draw one first with /draw or !draw."]
+    assert early.replies == [NOTHING_TO_REFINE]
     assert events == []
     await bot.on_message(FakeMessage("!draw a cat", ch))
+    await finish(bot)
     mock_api.reply = "a cat, watercolor, night sky"
     msg = FakeMessage("!refine make it night", ch)
     await bot.on_message(msg)
+    await finish(bot)
     assert msg.replies[1].filename == "image.png"
     first, second = comfy.jobs
     assert second["5"]["inputs"]["seed"] == first["5"]["inputs"]["seed"]
@@ -187,7 +230,7 @@ async def test_refine_changes_the_last_prompt_and_keeps_the_seed(mock_api, comfy
     assert "a cat, watercolor" in asked and "make it night" in asked
     other = FakeMessage("!refine make it night", FakeChannel(BOT_CHANNEL_2))
     await bot.on_message(other)
-    assert other.replies[0].startswith("Nothing to refine")
+    assert other.replies == [NOTHING_TO_REFINE]
 
 
 async def test_style_switch_picks_the_checkpoint_per_channel(mock_api, comfy, events):
@@ -199,24 +242,13 @@ async def test_style_switch_picks_the_checkpoint_per_channel(mock_api, comfy, ev
     bad = FakeMessage("!style watercolor", ch)
     await bot.on_message(bad)
     assert bad.replies[0].startswith("Unknown style")
-    await bot.on_message(FakeMessage("!draw a cat", ch))
-    await bot.on_message(FakeMessage("!draw a cat", FakeChannel(BOT_CHANNEL_2)))
-    await bot.on_message(FakeMessage("!style anime", ch))
-    await bot.on_message(FakeMessage("!refine add snow", ch))
+    for message in (FakeMessage("!draw a cat", ch), FakeMessage("!draw a cat", FakeChannel(BOT_CHANNEL_2)),
+                    FakeMessage("!style anime", ch), FakeMessage("!refine add snow", ch)):
+        await bot.on_message(message)
+        if bot.drawing():
+            await finish(bot)
     names = [job["1"]["inputs"]["ckpt_name"] for job in comfy.jobs]
     assert names == ["photo.safetensors", "model.safetensors", "photo.safetensors"]  # refine keeps its model
-
-
-async def test_comfyui_error_is_reported_and_gemma_comes_back(mock_api, comfy, events):
-    comfy.fail = True
-    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "m"})
-    try:
-        await maker.draw("a cat", BOT_CHANNEL)
-        raise AssertionError("expected DrawError")
-    except DrawError as e:
-        assert str(e) == "Sorry, the drawing failed."
-    assert events[-2:] == ["comfy free", "lms load gemma4-12b-bionic-v2 --context-length 16384"]
-    assert not maker.drawing
 
 
 async def test_starts_comfyui_in_the_background_when_it_is_off(mock_api, comfy, events, monkeypatch):
@@ -231,11 +263,11 @@ async def test_starts_comfyui_in_the_background_when_it_is_off(mock_api, comfy, 
     monkeypatch.setattr(ImageMaker, "_comfy_running", running)
     monkeypatch.setattr(imagegen.asyncio, "sleep", fast_sleep)
     maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "m"}, comfy_dir="C:/Comfy")
-    assert await maker.draw("a cat", BOT_CHANNEL) == PNG
+    assert await draw(maker, "a cat") == (PNG, None)
     assert len(started) == 1
     args, cwd = started[0]
     assert cwd == "C:/Comfy" and args[-1] == "--disable-auto-launch" and "main.py" in args[2]
-    await maker.draw("a dog", BOT_CHANNEL)
+    await draw(maker, "a dog")
     assert len(started) == 1  # already running: not started again
 
 

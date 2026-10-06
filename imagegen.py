@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from collections import deque
 
 import aiohttp
 
@@ -64,7 +65,9 @@ class ImageMaker:
         self.timeout = timeout
         self.comfy_dir = comfy_dir  # ComfyUI_windows_portable folder, to start it when it's off
         self.startup_wait = startup_wait
-        self.drawing = False  # while True the bot stays silent
+        self.drawing = False  # while True the bot only takes picture requests
+        self.queue = deque()  # (request, channel_id, user_id, deliver, refine), RAM only
+        self.waiting = set()  # members with a picture queued or being drawn
         self.last = {}  # channel_id -> (prompt, seed, checkpoint) of its last picture, RAM only
         self.styles = {}  # channel_id -> style name, RAM only
 
@@ -79,43 +82,90 @@ class ImageMaker:
         self.styles[channel_id] = name
         return name
 
-    async def draw(self, request, channel_id, notice=None, refine=False):
-        """Returns PNG bytes. Raises DrawError. Gemma is always back online afterwards.
-        notice: optional coroutine function run first, e.g. telling the channel.
-        refine: change the channel's last picture instead of starting a new one."""
-        if refine and channel_id not in self.last:
+    def submit(self, request, channel_id, user_id, deliver, refine=False):
+        """Queue a picture. Returns how many pictures are ahead (0 = starting now), or None if
+        this member already has one waiting or being drawn. Raises DrawError if there is
+        nothing to refine. deliver(png, error) is awaited
+        with the PNG bytes or an error text once this picture is done."""
+        if user_id in self.waiting:
+            return None
+        if refine and channel_id not in self.last and not any(job[1] == channel_id for job in self.queue):
             raise DrawError(NOTHING_TO_REFINE)
-        self.drawing = True  # set before any await so a second request can't slip in
+        ahead = len(self.waiting)
+        self.waiting.add(user_id)
+        self.queue.append((request, channel_id, user_id, deliver, refine))
+        if not self.drawing:
+            self.drawing = True  # set before any await so the bot goes silent at once
+            self._worker = asyncio.create_task(self._work())
+        return ahead
+
+    async def _work(self):
+        """Draw every queued picture. Gemma stays offline until the queue is empty."""
         try:
-            if notice:
-                await notice()
-            async with self.brain._lock:  # wait for replies in progress, block new ones
-                if refine:
-                    old, seed, checkpoint = self.last[channel_id]
-                    instruction = REFINER.format(prompt=old, request=request)
-                else:
-                    seed, instruction = random.randrange(2**32), PROMPT_WRITER.format(request=request)
-                    checkpoint = self.checkpoints[self.style(channel_id)]
-                prompt = await self.brain.image_prompt(instruction)
-                if prompt is None:
-                    raise DrawError("Sorry, my brain (LM Studio) is offline right now.")
-                if prompt.startswith("REFUSED") or blocked(prompt):
-                    raise DrawError("Sorry, I won't draw that.")
-                await self._start_comfy()
-                log.info("Drawing; unloading %s from the GPU", self.brain.model)
-                await self._lms("unload", self.brain.model)
+            while self.queue:
+                async with self.brain._lock:  # wait for replies in progress, block new ones
+                    jobs = await self._write_prompts()
+                    if jobs:
+                        await self._draw_all(jobs)
+        except Exception:
+            log.exception("Drawing failed")
+            for job in self.queue:
+                await self._deliver(job[3], job[2], None, "Sorry, something went wrong while drawing.")
+            self.queue.clear()
+        finally:
+            self.waiting.clear()
+            self.drawing = False
+
+    async def _write_prompts(self):
+        """Gemma (still loaded) writes the prompt for each queued picture."""
+        jobs = []
+        while self.queue:
+            request, channel_id, user_id, deliver, refine = self.queue.popleft()
+            if refine and channel_id not in self.last:
+                await self._deliver(deliver, user_id, None, NOTHING_TO_REFINE)
+                continue
+            if refine:
+                old, seed, checkpoint = self.last[channel_id]
+                instruction = REFINER.format(prompt=old, request=request)
+            else:
+                seed, instruction = random.randrange(2**32), PROMPT_WRITER.format(request=request)
+                checkpoint = self.checkpoints[self.style(channel_id)]
+            prompt = await self.brain.image_prompt(instruction)
+            if prompt is None:
+                await self._deliver(deliver, user_id, None, "Sorry, my brain (LM Studio) is offline right now.")
+            elif prompt.startswith("REFUSED") or blocked(prompt):
+                await self._deliver(deliver, user_id, None, "Sorry, I won't draw that.")
+            else:
+                self.last[channel_id] = (prompt, seed, checkpoint)  # a queued /refine builds on it
+                jobs.append((prompt, seed, checkpoint, user_id, deliver))
+        return jobs
+
+    async def _draw_all(self, jobs):
+        await self._start_comfy()
+        log.info("Drawing %d picture(s); unloading %s from the GPU", len(jobs), self.brain.model)
+        await self._lms("unload", self.brain.model)
+        try:
+            for prompt, seed, checkpoint, user_id, deliver in jobs:
                 try:
                     png = await self._comfy(prompt, seed, checkpoint)
-                    self.last[channel_id] = (prompt, seed, checkpoint)
-                    return png
-                finally:
-                    await self._free_comfy()
-                    log.info("Loading %s back onto the GPU", self.brain.model)
-                    if not await self._lms("load", self.brain.model,
-                                           "--context-length", str(self.context_length)):
-                        log.error("Could not reload %s; load it in LM Studio by hand", self.brain.model)
+                except DrawError as e:
+                    await self._deliver(deliver, user_id, None, str(e))
+                else:
+                    await self._deliver(deliver, user_id, png, None)
         finally:
-            self.drawing = False
+            await self._free_comfy()
+            log.info("Loading %s back onto the GPU", self.brain.model)
+            if not await self._lms("load", self.brain.model,
+                                   "--context-length", str(self.context_length)):
+                log.error("Could not reload %s; load it in LM Studio by hand", self.brain.model)
+
+    async def _deliver(self, deliver, user_id, png, error):
+        """Hand back one result; the member may then queue another picture."""
+        self.waiting.discard(user_id)
+        try:
+            await deliver(png, error)
+        except Exception:
+            log.exception("Could not post a picture")
 
     async def _lms(self, *args):
         """Runs the LM Studio CLI; returns True on success. Never raises."""

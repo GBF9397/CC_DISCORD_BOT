@@ -23,6 +23,10 @@ STICKER_CHANCE = 0.2  # share of chat replies where the model is offered sticker
 CDN = "https://cdn.discordapp.com"
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):(\d+)>")
 DRAWING_NOTICE = "🎨 Drawing... I'm offline until it's done. 画画中，画完才回来。"
+QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again once every picture is done. "
+                 "已排队，前面还有 {ahead} 张，全部画完我才回来聊天。")
+ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
+                  "你已经有一张在排队了，画完才能再点。")
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 
 
@@ -68,17 +72,30 @@ class ChatBot(discord.Client):
         return not allowed or user.id in allowed
 
     def drawing(self):
-        """While an image is being drawn Gemma is offline and the bot answers nobody."""
+        """While pictures are being drawn Gemma is offline and the bot only takes picture requests."""
         return self.images is not None and self.images.drawing
 
-    async def draw(self, request, channel_id, notice, refine=False):
-        """Returns (discord.File or None, error text or None). The picture stays in RAM."""
-        log.info("Drawing an image")
+    def is_draw_request(self, content):
+        words = content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", "").split()
+        return bool(self.images) and len(words) > 1 and words[0].lower() in ("!draw", "!refine")
+
+    def queue_picture(self, request, channel_id, user_id, refine, send):
+        """Queues a picture; send(text) / send(file=...) posts the result later.
+        Returns the notice to post now. The picture stays in RAM."""
+        async def deliver(png, error):
+            if png:
+                await send(file=discord.File(io.BytesIO(png), "image.png"))
+            else:
+                await send(error)
+
         try:
-            png = await self.images.draw(request, channel_id, notice, refine)
+            ahead = self.images.submit(request, channel_id, user_id, deliver, refine)
         except DrawError as e:
-            return None, str(e)
-        return discord.File(io.BytesIO(png), "image.png"), None
+            return str(e)
+        if ahead is None:
+            return ALREADY_QUEUED
+        log.info("Picture queued, %d ahead", ahead)
+        return DRAWING_NOTICE if ahead == 0 else QUEUED_NOTICE.format(ahead=ahead)
 
     def change_style(self, channel_id, name):
         """Text to post after a member asks to switch drawing style (empty name shows the current one)."""
@@ -236,21 +253,22 @@ class ChatBot(discord.Client):
             return
 
         async def draw_command(interaction, request, refine):
-            if self.drawing():
-                return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
-            file, error = await self.draw(request, interaction.channel_id,
-                                          lambda: interaction.response.defer(thinking=True), refine)
-            if file:
-                await interaction.followup.send(f"{interaction.user.display_name}: {request[:200]}", file=file)
-            elif interaction.response.is_done():
-                await interaction.followup.send(error)
-            else:
-                await interaction.response.send_message(error, ephemeral=True)
+            caption = f"{interaction.user.mention}: {request[:200]}"
 
-        @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until it's done)")
+            async def send(text=None, file=None):
+                # The channel, not the interaction: its token expires after 15 minutes in the queue.
+                if file:
+                    await interaction.channel.send(caption, file=file)
+                else:
+                    await interaction.channel.send(f"{interaction.user.mention} {text}")
+
+            notice = self.queue_picture(request, interaction.channel_id, interaction.user.id, refine, send)
+            await interaction.response.send_message(notice, ephemeral=not notice.startswith("🎨"))  # refusals only to the asker
+
+        @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until all pictures are done)")
         async def draw(interaction: discord.Interaction, request: str):
             await draw_command(interaction, request, refine=False)
 
@@ -287,7 +305,7 @@ class ChatBot(discord.Client):
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars, %d attachments)",
                  message.channel.id, message.author.id, len(message.content), len(message.attachments))
-        if message.author.bot or self.drawing():
+        if message.author.bot or (self.drawing() and not self.is_draw_request(message.content)):
             return
         self.note_usage(message)
         if not self.allowed(message.author):
@@ -313,13 +331,15 @@ class ChatBot(discord.Client):
                                 mention_author=False)
             return
         if self.images and command in ("!draw", "!refine") and text[len(command):].strip():
-            file, error = await self.draw(text[len(command):].strip(), message.channel.id,
-                                          lambda: message.reply(DRAWING_NOTICE, mention_author=False),
-                                          refine=command == "!refine")
-            if file:
-                await message.reply(file=file, mention_author=False)
-            else:
-                await message.reply(error, mention_author=False)
+            async def send(text=None, file=None):
+                if file:
+                    await message.reply(file=file, mention_author=False)
+                else:
+                    await message.reply(text, mention_author=False)
+
+            notice = self.queue_picture(text[len(command):].strip(), message.channel.id, message.author.id,
+                                        command == "!refine", send)
+            await message.reply(notice, mention_author=False)
             return
         search = text.lower().startswith("!search ")
         if search:
