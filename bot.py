@@ -137,7 +137,8 @@ class ChatBot(discord.Client):
                         sticker_labels.append(self.label(
                             s.id, s.name, hand.get(s.name) or self.meanings.get(s.id) or s.description, s.emoji))
         reply = await self.brain.ask(channel_id, user_name, text, images, results,
-                                     extras_note(labels, sticker_labels) + (DRAW_HINT if self.images else ""))
+                                     extras_note(labels, sticker_labels) + (DRAW_HINT if self.images else ""),
+                                     limited=not search)
         return apply_extras(reply, emojis, sticker_map)
 
     def label(self, item_id, name, *hints):

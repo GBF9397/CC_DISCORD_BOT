@@ -300,3 +300,17 @@ async def test_learns_from_how_members_use_emoji(mock_api, monkeypatch):
     system = mock_api.requests[0]["messages"][0]["content"]
     assert 'kekw (used like "lol you lost again :kekw:")' in system
     assert 'catjam (used like "party time ' in system and '..."' in system
+
+
+async def test_bang_search_reply_has_no_length_cap(mock_api, monkeypatch):
+    import bot as bot_module
+
+    async def fake_search(query):
+        return "result"
+    monkeypatch.setattr(bot_module, "web_search", fake_search)
+    mock_api.reply = "一二三四五六七八九十" * 20
+    bot = make_bot(mock_api.base_url)
+    msg = FakeMessage("!search news", FakeChannel(BOT_CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies == ["一二三四五六七八九十" * 20]
+    assert "Length limit" not in mock_api.requests[-1]["messages"][0]["content"]
