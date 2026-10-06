@@ -349,6 +349,7 @@ def main():
     if not config["token"]:
         sys.exit("DISCORD_TOKEN is missing. Copy .env.example to .env and paste your bot token there.")
     lower_priority()
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines carry request URLs
     ChatBot(config).run(config["token"], root_logger=True)
 
 

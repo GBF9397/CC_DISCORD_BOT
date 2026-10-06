@@ -156,7 +156,8 @@ class ImageMaker:
                         "prompt": self._workflow(prompt, seed, checkpoint), "client_id": client}) as r:
                     body = await r.json(content_type=None)
                     if r.status != 200 or "prompt_id" not in body:
-                        log.error("ComfyUI rejected the job: %s", str(body)[:500])
+                        # Only the error type: details can echo the prompt, and nothing members wrote is logged.
+                        log.error("ComfyUI rejected the job: %s", str(body.get("error", {}).get("type"))[:100])
                         raise DrawError("Sorry, the image generator rejected the job.")
                 return await asyncio.wait_for(self._receive(ws, body["prompt_id"]), self.timeout)
         except asyncio.TimeoutError:
@@ -191,10 +192,11 @@ class ImageMaker:
         return png
 
     async def _free_comfy(self):
-        """Ask ComfyUI to drop its model from the GPU. Never raises."""
+        """Ask ComfyUI to drop its model from the GPU and forget the job's prompt. Never raises."""
         try:
             async with aiohttp.ClientSession() as http:
                 await http.post(f"{self.comfy_url}/free",
                                 json={"unload_models": True, "free_memory": True})
+                await http.post(f"{self.comfy_url}/history", json={"clear": True})
         except aiohttp.ClientError as e:
             log.warning("Could not ask ComfyUI to free the GPU: %s", e)

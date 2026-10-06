@@ -29,6 +29,6 @@ async def web_search(query, max_results=5):
     try:
         results = await asyncio.to_thread(_search, query, max_results)
     except Exception as e:
-        log.warning("Web search failed: %s", e)
+        log.warning("Web search failed: %s", type(e).__name__)  # the message can hold the query
         return ""
     return "\n\n".join(f"{r.get('title', '')}\n{r.get('href', '')}\n{r.get('body', '')}" for r in results)
