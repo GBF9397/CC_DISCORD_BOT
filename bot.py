@@ -1,4 +1,5 @@
 """Discord chat bot backed by the local Gemma 4 Bionic model in LM Studio."""
+import io
 import logging
 import os
 import random
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 
 from core import (CUSTOM_MAX_CHARS, PERSONAS, Brain, ChannelMemory, apply_extras, extras_note,
                   load_config, load_meanings, split_message)
+from imagegen import DrawError, ImageMaker
 from search import needs_search, web_search
 
 log = logging.getLogger("bot")
@@ -20,6 +22,16 @@ IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 STICKER_CHANCE = 0.2  # share of chat replies where the model is offered stickers
 CDN = "https://cdn.discordapp.com"
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):(\d+)>")
+DRAWING_NOTICE = "🎨 Drawing... I'm offline until it's done. 画画中，画完才回来。"
+DONE_NOTICE = "🎨 Done! 画好了！"
+# Added to the system prompt when drawing is on, so Gemma stops saying it can't make pictures.
+DRAW_HINT = ("\n\nThis bot can draw pictures, but not in a normal reply: if someone asks you to draw "
+             "or make a picture, tell them to send !draw followed by what they want (add realistic "
+             "first for a photo look), or use /draw.")
+QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again once every picture is done. "
+                 "已排队，前面还有 {ahead} 张，全部画完我才回来聊天。")
+ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
+                  "你已经有一张在排队了，画完才能再点。")
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 
 
@@ -50,11 +62,59 @@ class ChatBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.meanings = {}  # emoji/sticker id -> what Gemma thinks it means, RAM only
         self.examples = defaultdict(lambda: deque(maxlen=EXAMPLES_KEPT))  # id -> recent member uses, RAM only
+        self.images = None
+        if config.get("image_gen"):
+            checkpoints = {"anime": config["sd_checkpoint"]}  # SD_CHECKPOINT is the default style
+            if config.get("sd_checkpoint_realistic"):
+                checkpoints["realistic"] = config["sd_checkpoint_realistic"]
+            self.images = ImageMaker(self.brain, config["comfyui_url"], checkpoints,
+                                     config["image_size"], config["lmstudio_context"],
+                                     comfy_dir=config.get("comfyui_dir", ""))
         self._add_slash_commands()
 
     def allowed(self, user):
         allowed = self.config["allowed_users"]
         return not allowed or user.id in allowed
+
+    def drawing(self):
+        """While pictures are being drawn Gemma is offline and the bot only takes picture requests."""
+        return self.images is not None and self.images.drawing
+
+    def is_draw_request(self, content):
+        words = content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", "").split()
+        return bool(self.images) and len(words) > 1 and words[0].lower() in ("!draw", "!refine")
+
+    def queue_picture(self, request, channel_id, user_id, refine, send, edit):
+        """Queues a picture; send(text) / send(file=...) posts the result later, and
+        edit(text) updates the notice with the drawing progress.
+        Returns the notice to post now. The picture stays in RAM."""
+        async def deliver(png, error):
+            if png:
+                await send(file=discord.File(io.BytesIO(png), "image.png"))
+            else:
+                await send(error)
+
+        async def progress(percent):
+            await edit(f"{DRAWING_NOTICE}\n{'▓' * (percent // 10)}{'░' * (10 - percent // 10)} {percent}%")
+
+        try:
+            ahead = self.images.submit(request, channel_id, user_id, deliver, refine, progress)
+        except DrawError as e:
+            return str(e)
+        if ahead is None:
+            return ALREADY_QUEUED
+        log.info("Picture queued, %d ahead", ahead)
+        return DRAWING_NOTICE if ahead == 0 else QUEUED_NOTICE.format(ahead=ahead)
+
+    def change_style(self, channel_id, name):
+        """Text to post after a member asks to switch drawing style (empty name shows the current one)."""
+        styles = ", ".join(self.images.checkpoints)
+        if not name.strip():
+            return f"Drawing style here: {self.images.style(channel_id)}. Styles: {styles}"
+        style = self.images.set_style(channel_id, name)
+        if style is None:
+            return f"Unknown style. Styles: {styles}"
+        return f"Drawing style switched to {style}."
 
     async def answer(self, channel_id, user_name, text, images=(), search=False, guild=None, stickers=False):
         """Returns (reply text, sticker to send or None). Uses the server's own custom
@@ -77,7 +137,7 @@ class ChatBot(discord.Client):
                         sticker_labels.append(self.label(
                             s.id, s.name, hand.get(s.name) or self.meanings.get(s.id) or s.description, s.emoji))
         reply = await self.brain.ask(channel_id, user_name, text, images, results,
-                                     extras_note(labels, sticker_labels))
+                                     extras_note(labels, sticker_labels) + (DRAW_HINT if self.images else ""))
         return apply_extras(reply, emojis, sticker_map)
 
     def label(self, item_id, name, *hints):
@@ -124,6 +184,8 @@ class ChatBot(discord.Client):
     def _add_slash_commands(self):
         @self.tree.command(name="ask", description="Ask the bot something")
         async def ask(interaction: discord.Interaction, question: str):
+            if self.drawing():
+                return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -135,6 +197,8 @@ class ChatBot(discord.Client):
 
         @self.tree.command(name="search", description="Look something up on the web, then answer")
         async def search(interaction: discord.Interaction, question: str):
+            if self.drawing():
+                return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -146,6 +210,8 @@ class ChatBot(discord.Client):
 
         @self.tree.command(name="reset", description="Clear the bot's memory of this channel")
         async def reset(interaction: discord.Interaction):
+            if self.drawing():
+                return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -159,6 +225,8 @@ class ChatBot(discord.Client):
         @app_commands.choices(preset=[app_commands.Choice(name=k, value=k) for k in PERSONAS])
         async def persona(interaction: discord.Interaction, preset: app_commands.Choice[str] = None,
                           custom: str = None, character: str = None):
+            if self.drawing():
+                return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -190,6 +258,48 @@ class ChatBot(discord.Client):
             await interaction.response.send_message(
                 f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
 
+        if self.images is None:
+            return
+
+        async def draw_command(interaction, request, refine):
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            caption = f"{interaction.user.mention}: {request[:200]}"
+
+            async def send(text=None, file=None):
+                # The channel, not the interaction: its token expires after 15 minutes in the queue.
+                if file:
+                    await interaction.channel.send(caption, file=file)
+                else:
+                    await interaction.channel.send(f"{interaction.user.mention} {text}")
+
+            async def edit(text):
+                await interaction.edit_original_response(content=text)
+
+            notice = self.queue_picture(request, interaction.channel_id, interaction.user.id, refine, send, edit)
+            await interaction.response.send_message(notice, ephemeral=not notice.startswith("🎨"))  # refusals only to the asker
+
+        @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until all pictures are done)")
+        @app_commands.describe(request="What to draw; start with anime or realistic to pick the style")
+        async def draw(interaction: discord.Interaction, request: str):
+            await draw_command(interaction, request, refine=False)
+
+        @self.tree.command(name="refine", description="Change the last picture drawn in this channel")
+        @app_commands.describe(changes="What to change, e.g. 'make it night time'")
+        async def refine(interaction: discord.Interaction, changes: str):
+            await draw_command(interaction, changes, refine=True)
+
+        @self.tree.command(name="drawstyle", description="Switch the drawing style in this channel")
+        @app_commands.describe(style="anime or realistic; leave empty to see the current one")
+        async def drawstyle(interaction: discord.Interaction, style: str = ""):
+            if self.drawing():
+                return
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            await interaction.response.send_message(self.change_style(interaction.channel_id, style))
+
     async def setup_hook(self):
         await self.tree.sync()
 
@@ -208,7 +318,7 @@ class ChatBot(discord.Client):
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars, %d attachments)",
                  message.channel.id, message.author.id, len(message.content), len(message.attachments))
-        if message.author.bot:
+        if message.author.bot or (self.drawing() and not self.is_draw_request(message.content)):
             return
         self.note_usage(message)
         if not self.allowed(message.author):
@@ -228,6 +338,29 @@ class ChatBot(discord.Client):
         for tag in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
             text = text.replace(tag, "")
         text = text.strip()
+        command = text.split(" ", 1)[0].lower()
+        if self.images and command == "!style":
+            await message.reply(self.change_style(message.channel.id, text[len(command):]),
+                                mention_author=False)
+            return
+        if self.images and command in ("!draw", "!refine") and text[len(command):].strip():
+            async def send(text=None, file=None):
+                # mention_author pings the member, since the picture can arrive minutes later.
+                if file:
+                    await message.reply(DONE_NOTICE, file=file, mention_author=True)
+                else:
+                    await message.reply(text, mention_author=True)
+
+            notice_message = None
+
+            async def edit(text):
+                if notice_message:
+                    await notice_message.edit(content=text)
+
+            notice = self.queue_picture(text[len(command):].strip(), message.channel.id, message.author.id,
+                                        command == "!refine", send, edit)
+            notice_message = await message.reply(notice, mention_author=False)
+            return
         search = text.lower().startswith("!search ")
         if search:
             text = text[len("!search "):].strip()
@@ -257,6 +390,10 @@ def main():
     if not config["token"]:
         sys.exit("DISCORD_TOKEN is missing. Copy .env.example to .env and paste your bot token there.")
     lower_priority()
+    for name in ("httpx", "httpx2"):  # their INFO lines carry request URLs
+        logging.getLogger(name).setLevel(logging.WARNING)
+    for name in ("primp", "ddgs"):  # their lines carry web search queries; search.py logs failures itself
+        logging.getLogger(name).disabled = True
     ChatBot(config).run(config["token"], root_logger=True)
 
 

@@ -35,8 +35,19 @@ class FakeMessage:
         self.mentions = list(mentions)
         self.replies = []
 
-    async def reply(self, text, mention_author=True):
-        self.replies.append(text)
+    async def reply(self, text=None, mention_author=True, file=None):
+        self.replies.append(text if file is None else file)
+        self.mentioned = mention_author
+        self.sent = FakeSent()
+        return self.sent
+
+
+class FakeSent:
+    def __init__(self):
+        self.edits = []
+
+    async def edit(self, content=None):
+        self.edits.append(content)
 
 
 class FakeAttachment:

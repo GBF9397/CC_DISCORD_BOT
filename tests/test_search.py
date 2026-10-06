@@ -111,3 +111,36 @@ async def test_persona_character_unknown_keeps_old_persona(mock_api, monkeypatch
     await bot.tree.get_command("persona").callback(character_interaction(said), None, None, "Zzxq")
     assert bot.brain.persona(BOT_CHANNEL) == before
     assert "couldn't find out enough about **Zzxq**" in said[0]
+
+
+async def test_image_search_downloads_pictures_into_ram(monkeypatch):
+    from aiohttp import web
+    async def picture(request):
+        return web.Response(body=b"JPEG", content_type="image/jpeg")
+
+    async def page(request):
+        return web.Response(text="<html>", content_type="text/html")
+
+    app = web.Application()
+    app.router.add_get("/a.jpg", picture)
+    app.router.add_get("/page", page)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    base = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+    monkeypatch.setattr(search, "_images", lambda q, n: [
+        {"image": f"{base}/missing.jpg", "thumbnail": f"{base}/a.jpg"},  # full picture gone: use the small one
+        {"image": f"{base}/page", "thumbnail": f"{base}/page"},  # not a picture: skipped
+    ])
+    try:
+        assert await search.image_search("claret") == [(b"JPEG", "image/jpeg")]
+    finally:
+        await runner.cleanup()
+
+
+async def test_image_search_failure_gives_no_pictures(monkeypatch):
+    def boom(q, n):
+        raise RuntimeError("blocked")
+    monkeypatch.setattr(search, "_images", boom)
+    assert await search.image_search("claret") == []
