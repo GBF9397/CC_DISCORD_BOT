@@ -77,7 +77,8 @@ STICKER_NOTE = (
     "mood: put [sticker: name] at the very end of your reply. Usually don't. Available: {stickers}."
 )
 STICKER_TAG = re.compile(r"\s*\[sticker:\s*([^\]]+)\]", re.IGNORECASE)
-EMOJI_TAG = re.compile(r"(?<![<\w]):([\w~-]{2,32}):")
+# Colons may be full-width (：name：) when the model writes Chinese; "<:" and "<a:" are real emoji already.
+EMOJI_TAG = re.compile(r"(?<!<)(?<!<a)[:：]([\w~-]{2,32})[:：]")
 MAX_EXTRAS = 50  # names listed per kind, to keep the prompt small
 
 
@@ -112,9 +113,9 @@ LENGTH_NOTE = (
     "reply in English (an emoji counts as one). Say less rather than stopping mid-sentence, "
     "even if your earlier replies were longer."
 )
-# One length unit: a CJK character or punctuation mark, or a run of other non-space text.
+# One length unit: an emoji tag, a CJK character or punctuation mark, or a run of other non-space text.
 CJK = "\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef"
-LENGTH_UNIT = re.compile(f"[{CJK}]|[^\\s{CJK}]+")
+LENGTH_UNIT = re.compile(f"{EMOJI_TAG.pattern}|[{CJK}]|[^\\s{CJK}]+")
 SENTENCE_END = re.compile(r"[。！？!?…~～]+|\.(?=\s|$)")
 
 
