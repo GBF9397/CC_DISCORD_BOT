@@ -16,6 +16,9 @@ Questions that sound time-sensitive (today, latest, news, price, weather, score,
 
 The bot remembers the last 30 messages per channel (in RAM, trimmed to ~9000 tokens; set LM Studio's context length to 16384 or more), answers one request at a time in order, shows "typing...", splits replies over 2000 characters, and says so politely if LM Studio is offline.
 
+## Unfiltered mode (optional)
+Set `UNFILTERED_MODE=on` in `.env` and restart to loosen the bot's style: swearing, crude and dark humor, harsher roasts, mature topics, blunt opinions, and far fewer refusals or safety disclaimers. It is off by default. Hard limits stay: no sexual content involving minors, no real-world instructions for weapons or serious harm, no doxxing or harassing real people. Gemma has its own built-in caution, so a prompt can only loosen it so far; to go further, load a less filtered model in LM Studio and put its id in `LMSTUDIO_MODEL` (no code change). Keep anything sexual to Discord age-restricted channels.
+
 ## Emoji meanings by hand (optional)
 If the bot misreads an emoji or sticker, create `emoji_meanings.txt` next to `bot.py` (it is gitignored) with one line per emoji, using its Discord name:
 ```
