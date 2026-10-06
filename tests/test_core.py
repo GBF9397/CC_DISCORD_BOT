@@ -85,14 +85,14 @@ def test_bot_channel_id_accepts_several_ids(monkeypatch):
 async def test_persona_is_per_channel_and_switch_clears_memory(mock_api):
     brain = make_brain(mock_api.base_url)
     await brain.ask(1, "Ep", "hi")
-    assert mock_api.requests[0]["messages"][0]["content"].endswith(PERSONAS[DEFAULT_PERSONA])
+    assert PERSONAS[DEFAULT_PERSONA] in mock_api.requests[0]["messages"][0]["content"]
     assert "name" in mock_api.requests[0]["messages"][0]["content"]
     brain.set_persona(1, PERSONAS["pirate"])
     assert brain.memory.get(1) == []
     await brain.ask(1, "Ep", "ahoy")
     await brain.ask(2, "Bo", "hello")
-    assert mock_api.requests[1]["messages"][0]["content"].endswith(PERSONAS["pirate"])
-    assert mock_api.requests[2]["messages"][0]["content"].endswith(PERSONAS[DEFAULT_PERSONA])
+    assert PERSONAS["pirate"] in mock_api.requests[1]["messages"][0]["content"]
+    assert PERSONAS[DEFAULT_PERSONA] in mock_api.requests[2]["messages"][0]["content"]
 
 
 def test_apply_extras_converts_emoji_and_pulls_sticker():
@@ -130,3 +130,24 @@ async def test_unfiltered_mode_is_off_by_default_and_loosens_prompt_when_on(mock
     await brain.ask(1, "Ep", "hi")
     system = mock_api.requests[-1]["messages"][0]["content"]
     assert UNFILTERED_NOTE in system and "minors" in system
+
+
+async def test_each_reply_draws_a_length_cap_and_long_replies_are_cut(mock_api, monkeypatch):
+    import core
+    monkeypatch.setattr(core.random, "choice", lambda options: 10)
+    mock_api.reply = "哈哈哈哈哈哈。今天天气真好呀！你呢？"
+    brain = make_brain(mock_api.base_url)
+    reply = await brain.ask(1, "Ep", "hi")
+    assert reply == "哈哈哈哈哈哈。"
+    assert "at most 10 Chinese characters" in mock_api.requests[-1]["messages"][0]["content"]
+    assert brain.memory.get(1)[-1]["content"] == "哈哈哈哈哈哈。"
+    assert "max_tokens" not in mock_api.requests[-1]  # reasoning needs the room
+
+
+def test_shorten_counts_chinese_characters_and_english_words():
+    from core import REPLY_LENGTHS, shorten
+    assert REPLY_LENGTHS == (10, 30, 50, 100)
+    assert shorten("short reply", 10) == "short reply"
+    assert shorten("一二三四五六七八九十十一", 10) == "一二三四五六七八九十…"
+    assert shorten("one two three. four five six seven eight nine ten eleven", 10) == "one two three. four five six seven eight nine ten…"
+    assert shorten("好的 :catcry: 我知道了，然后还有很多很多话要说", 5) == "好的 :catcry: 我知…"
