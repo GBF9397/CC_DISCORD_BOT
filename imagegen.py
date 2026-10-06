@@ -28,7 +28,7 @@ PROMPT_WRITER = (
     "with only the prompt. If the request is sexual and involves anyone who is or looks "
     "under 18, or is a sexual or degrading picture of a real person, reply only REFUSED. "
     "If it names a specific character, person, place, product or artwork (a proper name, "
-    "even one you think you know), reply only SEARCH: <name, its series, appearance>.\n\n"
+    "even one you think you know), reply only SEARCH: <its name and series>.\n\n"
     "[Request]\n{request}"
 )
 # For /refine: change the channel's last prompt; the same seed keeps the overall look.
@@ -40,7 +40,7 @@ REFINER = (
     "tags, under 60 words. If the change makes it sexual and involving anyone who is or "
     "looks under 18, or a sexual or degrading picture of a real person, reply only REFUSED. "
     "If the change names a specific character, person, place, product or artwork (a proper "
-    "name, even one you think you know), reply only SEARCH: <name, its series, appearance>."
+    "name, even one you think you know), reply only SEARCH: <its name and series>."
     "\n\n[Change]\n{request}"
 )
 # Added after a SEARCH: reply, so Gemma describes the look for ComfyUI, which has no internet.
@@ -158,7 +158,7 @@ class ImageMaker:
             image = self.pictures.get(channel_id) if refine else None
             prompt = await self.brain.image_prompt(instruction, image)
             if prompt and prompt.startswith("SEARCH:"):  # one lookup per picture, results never stored
-                results = await web_search(prompt[len("SEARCH:"):].strip())
+                results = await web_search(prompt[len("SEARCH:"):].strip() + " character appearance hair outfit")
                 log.info("Looked up a named subject on the web (%d characters found)", len(results))
                 prompt = await self.brain.image_prompt(instruction + LOOKUP.format(results=results or "(no results)"),
                                                        image)
