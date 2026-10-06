@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import os
+import re
 from collections import defaultdict, deque
 from datetime import date
 
@@ -52,6 +53,47 @@ CHARACTER_PROMPT = (
     "notes, no intro. If you don't recognise the character, reply only with UNKNOWN.\n\n"
     "[Web results]\n{results}"
 )
+
+# The server's own custom emoji (incl. animated GIF ones) and stickers, offered to the model.
+EXTRAS_NOTE = (
+    "\n\nThis server has custom emoji you may drop into a reply now and then by writing "
+    "them as :name:, picking one whose meaning fits your mood. Available: {emoji}."
+)
+STICKER_NOTE = (
+    "\n\nThis time you may also send ONE of the server's stickers if it really fits the "
+    "mood: put [sticker: name] at the very end of your reply. Usually don't. Available: {stickers}."
+)
+STICKER_TAG = re.compile(r"\s*\[sticker:\s*([^\]]+)\]", re.IGNORECASE)
+EMOJI_TAG = re.compile(r"(?<![<\w]):([\w~-]{2,32}):")
+MAX_EXTRAS = 50  # names listed per kind, to keep the prompt small
+
+
+def extras_note(emoji_names, sticker_names):
+    """System-prompt text listing what the model may use; empty when the server has none.
+    Names may carry a meaning in brackets, e.g. "catcry (sad crying cat)"."""
+    note = ""
+    if emoji_names:
+        note += EXTRAS_NOTE.format(emoji=", ".join(list(emoji_names)[:MAX_EXTRAS]))
+    if sticker_names:
+        note += STICKER_NOTE.format(stickers=", ".join(list(sticker_names)[:MAX_EXTRAS]))
+    return note
+
+
+def apply_extras(reply, emojis, stickers):
+    """emojis: name -> Discord emoji text like <:name:id>; stickers: name -> sticker.
+    Turns :name: into real emoji and pulls out one [sticker: name] tag.
+    Returns (text, sticker or None). Unknown names are left as plain text or dropped."""
+    sticker = None
+    match = STICKER_TAG.search(reply)
+    if match:
+        sticker = stickers.get(match.group(1).strip().strip(":"))
+    reply = STICKER_TAG.sub("", reply).strip()
+    reply = EMOJI_TAG.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
+    return (reply if reply or sticker else "..."), sticker
+
+
+DESCRIBE_PROMPT = ("This is a custom Discord emoji or sticker. In at most 6 words, say what "
+                   "emotion or meaning it shows when people use it in chat. Answer with just that.")
 
 OFFLINE_MESSAGE = "Sorry, my brain (LM Studio) is offline right now. Try again in a bit."
 ERROR_MESSAGE = "Sorry, something went wrong while thinking. Try again in a bit."
@@ -125,9 +167,25 @@ class Brain:
         return (f"{name}. Stay fully in character as {name}: talk, think and react the way "
                 f"they do, in their voice.\n{brief[:CHARACTER_MAX_CHARS]}")
 
-    async def ask(self, channel_id, user_name, text, images=(), search_results=""):
+    async def describe(self, image, mime="image/png"):
+        """A few words on what an emoji/sticker picture means, or "" if the model can't say."""
+        url = f"data:{mime};base64,{base64.b64encode(image).decode()}"
+        async with self._lock:
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=self.model, temperature=0.2,
+                    messages=[{"role": "user", "content": [
+                        {"type": "text", "text": DESCRIBE_PROMPT},
+                        {"type": "image_url", "image_url": {"url": url}}]}],
+                )
+            except (APIConnectionError, APITimeoutError, APIStatusError):
+                return ""
+        return " ".join((resp.choices[0].message.content or "").split())[:60]
+
+    async def ask(self, channel_id, user_name, text, images=(), search_results="", extras=""):
         """images: (bytes, mime type) pairs, sent to the model and never stored.
-        search_results: web results sent to the model once, never stored."""
+        search_results: web results sent to the model once, never stored.
+        extras: extras_note() text about the server's emoji and stickers."""
         user_msg = remembered = f"{user_name}: {text}"
         if search_results:
             user_msg = SEARCH_NOTE.format(today=f"{date.today():%A %d %B %Y}", results=search_results) + user_msg
@@ -139,7 +197,7 @@ class Brain:
                 for data, mime in images
             ]
         async with self._lock:
-            messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id)}]
+            messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id) + extras}]
             messages += self.memory.get(channel_id)
             messages.append({"role": "user", "content": user_msg})
             try:
@@ -156,7 +214,8 @@ class Brain:
             # Gemma 4 puts its reasoning in reasoning_content; only content is posted.
             reply = (resp.choices[0].message.content or "").strip() or "..."
             self.memory.add(channel_id, "user", remembered)
-            self.memory.add(channel_id, "assistant", reply)
+            # Forget sticker tags so the model doesn't copy them into every reply.
+            self.memory.add(channel_id, "assistant", STICKER_TAG.sub("", reply).strip() or "...")
             return reply
 
 
@@ -174,6 +233,21 @@ def split_message(text, limit=DISCORD_LIMIT):
     if text:
         chunks.append(text)
     return chunks
+
+
+def load_meanings(path="emoji_meanings.txt"):
+    """Hand-written meanings, one per line as `name: meaning`; # starts a comment.
+    Missing file means none."""
+    meanings = {}
+    try:
+        with open(path, encoding="utf-8-sig") as f:  # -sig: Notepad may add a BOM
+            for line in f:
+                name, sep, meaning = line.split("#", 1)[0].strip().lstrip(":").partition(":")
+                if sep and name.strip() and meaning.strip():
+                    meanings[name.strip()] = meaning.strip().lstrip(":").strip()
+    except FileNotFoundError:
+        pass
+    return meanings
 
 
 def load_config():

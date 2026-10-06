@@ -9,11 +9,21 @@ Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. The model g
 - Attach images (PNG, JPEG, WebP) to a message the bot answers and it looks at them. Images are only held in RAM for that one request, never saved.
 - `/search question:<text>` or `!search <text>` - look it up on the web first, then answer.
 - `/reset` or `!reset` - forget this channel's conversation.
+- The bot uses the server's own custom emoji (animated ones too) in its replies now and then, and once in a while sends one of the server's stickers. On startup it shows each emoji and sticker picture to Gemma once to learn what it means (kept in RAM only), and it remembers the last 2 short messages where members used each one (RAM only, gone on restart), so it can pick one that fits the mood.
 - `/persona` - change the bot's personality in this channel: pick a `preset` (buddy, tsundere, wuxia, pirate, roast) or write your own with `custom`, or play a known character with `character` (e.g. `Ganyu Genshin Impact`): the bot searches the web for them and turns what it finds into a personality. With no options it shows the current one. Switching clears the channel's memory. Personalities live in RAM, so a restart goes back to buddy.
 
 Questions that sound time-sensitive (today, latest, news, price, weather, score, a year like 2026, 今天, 最新, 新闻, 价格, 天气 ...) are searched automatically. Search results are used for that one answer only and are never saved.
 
 The bot remembers the last 10 messages per channel (in RAM, trimmed to ~3000 tokens), answers one request at a time in order, shows "typing...", splits replies over 2000 characters, and says so politely if LM Studio is offline.
+
+## Emoji meanings by hand (optional)
+If the bot misreads an emoji or sticker, create `emoji_meanings.txt` next to `bot.py` (it is gitignored) with one line per emoji, using its Discord name:
+```
+catstare: speechless at nonsense
+awkward_girl: awkward
+middlefinger: rude, playful f-you
+```
+Lines win over the bot's own guess and take effect on the next reply, no restart needed.
 
 ## Setup (Windows)
 1. LM Studio: load `gemma4-12b-bionic-v2`, then `lms server start` (serves `http://localhost:1234/v1`).
