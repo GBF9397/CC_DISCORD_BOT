@@ -68,13 +68,14 @@ async def comfy(events):
 def image_bot(api_url, comfy_url):
     bot = make_bot(api_url)
     bot.config.update(image_gen=True)
-    bot.images = ImageMaker(bot.brain, comfy_url, "model.safetensors", 1024, 16384)
+    bot.images = ImageMaker(bot.brain, comfy_url, {"anime": "model.safetensors", "realistic": "photo.safetensors"},
+                            1024, 16384)
     return bot
 
 
 async def test_draw_takes_turns_on_the_gpu(mock_api, comfy, events):
     mock_api.reply = "a cat, watercolor"
-    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, "model.safetensors")
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "model.safetensors"})
     assert await maker.draw("画一只猫", BOT_CHANNEL) == PNG
     assert events == ["lms unload gemma4-12b-bionic-v2", "comfy draw", "comfy free",
                       "lms load gemma4-12b-bionic-v2 --context-length 16384"]
@@ -87,7 +88,7 @@ async def test_draw_takes_turns_on_the_gpu(mock_api, comfy, events):
 
 
 async def test_gemma_comes_back_when_comfyui_is_offline(mock_api, events):
-    maker = ImageMaker(make_bot(mock_api.base_url).brain, "http://127.0.0.1:9", "m")
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, "http://127.0.0.1:9", {"anime": "m"})
     try:
         await maker.draw("a cat", BOT_CHANNEL)
         raise AssertionError("expected DrawError")
@@ -100,7 +101,7 @@ async def test_gemma_comes_back_when_comfyui_is_offline(mock_api, events):
 
 async def test_refused_request_never_unloads_gemma(mock_api, comfy, events):
     mock_api.reply = "REFUSED"
-    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, "m")
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "m"})
     try:
         await maker.draw("something bad", BOT_CHANNEL)
         raise AssertionError("expected DrawError")
@@ -166,3 +167,20 @@ async def test_refine_changes_the_last_prompt_and_keeps_the_seed(mock_api, comfy
     other = FakeMessage("!refine make it night", FakeChannel(BOT_CHANNEL_2))
     await bot.on_message(other)
     assert other.replies[0].startswith("Nothing to refine")
+
+
+async def test_style_switch_picks_the_checkpoint_per_channel(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    switch = FakeMessage("!style realistic", ch)
+    await bot.on_message(switch)
+    assert switch.replies == ["Drawing style switched to realistic."]
+    bad = FakeMessage("!style watercolor", ch)
+    await bot.on_message(bad)
+    assert bad.replies[0].startswith("Unknown style")
+    await bot.on_message(FakeMessage("!draw a cat", ch))
+    await bot.on_message(FakeMessage("!draw a cat", FakeChannel(BOT_CHANNEL_2)))
+    await bot.on_message(FakeMessage("!style anime", ch))
+    await bot.on_message(FakeMessage("!refine add snow", ch))
+    names = [job["1"]["inputs"]["ckpt_name"] for job in comfy.jobs]
+    assert names == ["photo.safetensors", "model.safetensors", "photo.safetensors"]  # refine keeps its model

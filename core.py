@@ -290,6 +290,7 @@ def load_config():
         "image_gen": os.getenv("IMAGE_GEN", "").strip().lower() in ("1", "on", "true", "yes"),
         "comfyui_url": os.getenv("COMFYUI_URL", "http://127.0.0.1:8188"),
         "sd_checkpoint": os.getenv("SD_CHECKPOINT", "").strip(),
+        "sd_checkpoint_realistic": os.getenv("SD_CHECKPOINT_REALISTIC", "").strip(),
         "image_size": int(os.getenv("IMAGE_SIZE", "") or 1024),
         "lmstudio_context": int(os.getenv("LMSTUDIO_CONTEXT", "") or 16384),
     }

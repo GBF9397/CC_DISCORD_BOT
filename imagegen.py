@@ -49,16 +49,28 @@ class DrawError(Exception):
 
 
 class ImageMaker:
-    def __init__(self, brain, comfy_url, checkpoint, size=1024, context_length=16384,
+    def __init__(self, brain, comfy_url, checkpoints, size=1024, context_length=16384,
                  timeout=600):
         self.brain = brain
         self.comfy_url = comfy_url.rstrip("/")
-        self.checkpoint = checkpoint
+        self.checkpoints = checkpoints  # style -> checkpoint file; the first is the default
         self.size = size
         self.context_length = context_length
         self.timeout = timeout
         self.drawing = False  # while True the bot stays silent
-        self.last = {}  # channel_id -> (prompt, seed) of its last picture, RAM only
+        self.last = {}  # channel_id -> (prompt, seed, checkpoint) of its last picture, RAM only
+        self.styles = {}  # channel_id -> style name, RAM only
+
+    def style(self, channel_id):
+        return self.styles.get(channel_id, next(iter(self.checkpoints)))
+
+    def set_style(self, channel_id, name):
+        """Returns the style name, or None if unknown."""
+        name = name.strip().lower()
+        if name not in self.checkpoints:
+            return None
+        self.styles[channel_id] = name
+        return name
 
     async def draw(self, request, channel_id, notice=None, refine=False):
         """Returns PNG bytes. Raises DrawError. Gemma is always back online afterwards.
@@ -72,10 +84,11 @@ class ImageMaker:
                 await notice()
             async with self.brain._lock:  # wait for replies in progress, block new ones
                 if refine:
-                    old, seed = self.last[channel_id]
+                    old, seed, checkpoint = self.last[channel_id]
                     instruction = REFINER.format(prompt=old, request=request)
                 else:
                     seed, instruction = random.randrange(2**32), PROMPT_WRITER.format(request=request)
+                    checkpoint = self.checkpoints[self.style(channel_id)]
                 prompt = await self.brain.image_prompt(instruction)
                 if prompt is None:
                     raise DrawError("Sorry, my brain (LM Studio) is offline right now.")
@@ -84,8 +97,8 @@ class ImageMaker:
                 log.info("Drawing; unloading %s from the GPU", self.brain.model)
                 await self._lms("unload", self.brain.model)
                 try:
-                    png = await self._comfy(prompt, seed)
-                    self.last[channel_id] = (prompt, seed)
+                    png = await self._comfy(prompt, seed, checkpoint)
+                    self.last[channel_id] = (prompt, seed, checkpoint)
                     return png
                 finally:
                     await self._free_comfy()
@@ -114,9 +127,9 @@ class ImageMaker:
             log.error("lms %s failed: %s", args[0], out.decode(errors="replace").strip()[-300:])
         return proc.returncode == 0
 
-    def _workflow(self, prompt, seed):
+    def _workflow(self, prompt, seed, checkpoint):
         return {
-            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": self.checkpoint}},
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": checkpoint}},
             "2": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["1", 1]}},
             "3": {"class_type": "CLIPTextEncode", "inputs": {"text": NEGATIVE, "clip": ["1", 1]}},
             "4": {"class_type": "EmptyLatentImage",
@@ -131,11 +144,11 @@ class ImageMaker:
             "7": {"class_type": "PreviewImage", "inputs": {"images": ["6", 0]}},
         }
 
-    async def _comfy(self, prompt, seed):
+    async def _comfy(self, prompt, seed, checkpoint):
         try:
             async with aiohttp.ClientSession() as http:
                 async with http.post(f"{self.comfy_url}/prompt",
-                                     json={"prompt": self._workflow(prompt, seed)}) as r:
+                                     json={"prompt": self._workflow(prompt, seed, checkpoint)}) as r:
                     body = await r.json(content_type=None)
                     if r.status != 200 or "prompt_id" not in body:
                         log.error("ComfyUI rejected the job: %s", str(body)[:500])

@@ -55,7 +55,10 @@ class ChatBot(discord.Client):
         self.examples = defaultdict(lambda: deque(maxlen=EXAMPLES_KEPT))  # id -> recent member uses, RAM only
         self.images = None
         if config.get("image_gen"):
-            self.images = ImageMaker(self.brain, config["comfyui_url"], config["sd_checkpoint"],
+            checkpoints = {"anime": config["sd_checkpoint"]}  # SD_CHECKPOINT is the default style
+            if config.get("sd_checkpoint_realistic"):
+                checkpoints["realistic"] = config["sd_checkpoint_realistic"]
+            self.images = ImageMaker(self.brain, config["comfyui_url"], checkpoints,
                                      config["image_size"], config["lmstudio_context"])
         self._add_slash_commands()
 
@@ -75,6 +78,16 @@ class ChatBot(discord.Client):
         except DrawError as e:
             return None, str(e)
         return discord.File(io.BytesIO(png), "image.png"), None
+
+    def change_style(self, channel_id, name):
+        """Text to post after a member asks to switch drawing style (empty name shows the current one)."""
+        styles = ", ".join(self.images.checkpoints)
+        if not name.strip():
+            return f"Drawing style here: {self.images.style(channel_id)}. Styles: {styles}"
+        style = self.images.set_style(channel_id, name)
+        if style is None:
+            return f"Unknown style. Styles: {styles}"
+        return f"Drawing style switched to {style}."
 
     async def answer(self, channel_id, user_name, text, images=(), search=False, guild=None, stickers=False):
         """Returns (reply text, sticker to send or None). Uses the server's own custom
@@ -245,6 +258,16 @@ class ChatBot(discord.Client):
         async def refine(interaction: discord.Interaction, changes: str):
             await draw_command(interaction, changes, refine=True)
 
+        @self.tree.command(name="drawstyle", description="Switch the drawing style in this channel")
+        @app_commands.describe(style="anime or realistic; leave empty to see the current one")
+        async def drawstyle(interaction: discord.Interaction, style: str = ""):
+            if self.drawing():
+                return
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            await interaction.response.send_message(self.change_style(interaction.channel_id, style))
+
     async def setup_hook(self):
         await self.tree.sync()
 
@@ -284,6 +307,10 @@ class ChatBot(discord.Client):
             text = text.replace(tag, "")
         text = text.strip()
         command = text.split(" ", 1)[0].lower()
+        if self.images and command == "!style":
+            await message.reply(self.change_style(message.channel.id, text[len(command):]),
+                                mention_author=False)
+            return
         if self.images and command in ("!draw", "!refine") and text[len(command):].strip():
             file, error = await self.draw(text[len(command):].strip(), message.channel.id,
                                           lambda: message.reply(DRAWING_NOTICE, mention_author=False),
