@@ -6,9 +6,12 @@ draws, then frees its model; Gemma comes back (lms load). No Discord code here.
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import shutil
+import subprocess
+import sys
 import uuid
 
 import aiohttp
@@ -52,13 +55,15 @@ class DrawError(Exception):
 
 class ImageMaker:
     def __init__(self, brain, comfy_url, checkpoints, size=1024, context_length=16384,
-                 timeout=600):
+                 timeout=600, comfy_dir="", startup_wait=180):
         self.brain = brain
         self.comfy_url = comfy_url.rstrip("/")
         self.checkpoints = checkpoints  # style -> checkpoint file; the first is the default
         self.size = size
         self.context_length = context_length
         self.timeout = timeout
+        self.comfy_dir = comfy_dir  # ComfyUI_windows_portable folder, to start it when it's off
+        self.startup_wait = startup_wait
         self.drawing = False  # while True the bot stays silent
         self.last = {}  # channel_id -> (prompt, seed, checkpoint) of its last picture, RAM only
         self.styles = {}  # channel_id -> style name, RAM only
@@ -96,6 +101,7 @@ class ImageMaker:
                     raise DrawError("Sorry, my brain (LM Studio) is offline right now.")
                 if prompt.startswith("REFUSED") or blocked(prompt):
                     raise DrawError("Sorry, I won't draw that.")
+                await self._start_comfy()
                 log.info("Drawing; unloading %s from the GPU", self.brain.model)
                 await self._lms("unload", self.brain.model)
                 try:
@@ -190,6 +196,38 @@ class ImageMaker:
         if not png:
             raise DrawError("Sorry, the drawing failed.")
         return png
+
+    async def _comfy_running(self):
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.get(f"{self.comfy_url}/system_stats",
+                                    timeout=aiohttp.ClientTimeout(total=5)) as r:
+                    return r.status == 200
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return False
+
+    async def _start_comfy(self):
+        """Start ComfyUI in the background, with no window, if it isn't running. Never raises;
+        if it still isn't up, the drawing reports ComfyUI as offline."""
+        if not self.comfy_dir or await self._comfy_running():
+            return
+        log.info("ComfyUI is off; starting it")
+        try:
+            # Same as run_nvidia_gpu.bat, minus opening the browser.
+            subprocess.Popen(
+                [os.path.join(self.comfy_dir, "python_embeded", "python.exe"), "-s",
+                 os.path.join("ComfyUI", "main.py"), "--windows-standalone-build", "--disable-auto-launch"],
+                cwd=self.comfy_dir, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        except OSError as e:
+            log.error("Could not start ComfyUI: %s", e)
+            return
+        for _ in range(self.startup_wait):
+            await asyncio.sleep(1)
+            if await self._comfy_running():
+                return
+        log.error("ComfyUI did not come up within %d seconds", self.startup_wait)
 
     async def _free_comfy(self):
         """Ask ComfyUI to drop its model from the GPU and forget the job's prompt. Never raises."""

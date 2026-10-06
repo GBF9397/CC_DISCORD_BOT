@@ -4,6 +4,7 @@ import asyncio
 import pytest_asyncio
 from aiohttp import web
 
+import imagegen
 from imagegen import DrawError, ImageMaker, blocked
 from tests.test_bot import BOT_CHANNEL, BOT_CHANNEL_2, FakeChannel, FakeMessage, make_bot
 
@@ -45,6 +46,9 @@ class MockComfy:
         await ws.send_bytes(b"\0\0\0\1\0\0\0\2" + PNG)
         await ws.send_json({"type": "executing", "data": {"node": None, "prompt_id": job}})
 
+    async def stats(self, request):
+        return web.json_response({})
+
     async def free(self, request):
         self.events.append("comfy free")
         return web.json_response({})
@@ -52,6 +56,7 @@ class MockComfy:
     async def start(self):
         app = web.Application()
         app.router.add_get("/ws", self.ws)
+        app.router.add_get("/system_stats", self.stats)
         app.router.add_post("/prompt", self.prompt)
         app.router.add_post("/free", self.free)
         self.runner = web.AppRunner(app)
@@ -212,3 +217,30 @@ async def test_comfyui_error_is_reported_and_gemma_comes_back(mock_api, comfy, e
         assert str(e) == "Sorry, the drawing failed."
     assert events[-2:] == ["comfy free", "lms load gemma4-12b-bionic-v2 --context-length 16384"]
     assert not maker.drawing
+
+
+async def test_starts_comfyui_in_the_background_when_it_is_off(mock_api, comfy, events, monkeypatch):
+    started = []
+    monkeypatch.setattr(imagegen.subprocess, "Popen", lambda args, **kw: started.append((args, kw["cwd"])))
+    up = iter([False, False, True])
+    real = ImageMaker._comfy_running
+
+    async def running(self):
+        return next(up, True) and await real(self)
+
+    monkeypatch.setattr(ImageMaker, "_comfy_running", running)
+    monkeypatch.setattr(imagegen.asyncio, "sleep", fast_sleep)
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "m"}, comfy_dir="C:/Comfy")
+    assert await maker.draw("a cat", BOT_CHANNEL) == PNG
+    assert len(started) == 1
+    args, cwd = started[0]
+    assert cwd == "C:/Comfy" and args[-1] == "--disable-auto-launch" and "main.py" in args[2]
+    await maker.draw("a dog", BOT_CHANNEL)
+    assert len(started) == 1  # already running: not started again
+
+
+REAL_SLEEP = asyncio.sleep
+
+
+async def fast_sleep(seconds):
+    await REAL_SLEEP(0)

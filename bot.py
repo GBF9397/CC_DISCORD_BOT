@@ -59,7 +59,8 @@ class ChatBot(discord.Client):
             if config.get("sd_checkpoint_realistic"):
                 checkpoints["realistic"] = config["sd_checkpoint_realistic"]
             self.images = ImageMaker(self.brain, config["comfyui_url"], checkpoints,
-                                     config["image_size"], config["lmstudio_context"])
+                                     config["image_size"], config["lmstudio_context"],
+                                     comfy_dir=config.get("comfyui_dir", ""))
         self._add_slash_commands()
 
     def allowed(self, user):

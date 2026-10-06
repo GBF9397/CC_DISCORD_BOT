@@ -289,6 +289,7 @@ def load_config():
         "stickers": os.getenv("STICKERS", "").strip().lower() in ("1", "on", "true", "yes"),
         "image_gen": os.getenv("IMAGE_GEN", "").strip().lower() in ("1", "on", "true", "yes"),
         "comfyui_url": os.getenv("COMFYUI_URL", "http://127.0.0.1:8188"),
+        "comfyui_dir": os.getenv("COMFYUI_DIR", "").strip(),
         "sd_checkpoint": os.getenv("SD_CHECKPOINT", "").strip(),
         "sd_checkpoint_realistic": os.getenv("SD_CHECKPOINT_REALISTIC", "").strip(),
         "image_size": int(os.getenv("IMAGE_SIZE", "") or 1024),
