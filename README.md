@@ -1,13 +1,16 @@
 # Discord bot on the local Gemma 4 Bionic model
 
-Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. Chat only: the model gets no tools.
+Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. The model gets no tools; for current questions the bot searches the web (free DuckDuckGo, no API key) and passes the results to the model.
 
 ## How members use it
 - `/ask question:<text>` - any member can ask (slash command).
 - `@Bot <text>` - mention the bot in any channel.
 - Any message in the channels listed in `BOT_CHANNEL_ID` (comma-separated).
 - Attach images (PNG, JPEG, WebP) to a message the bot answers and it looks at them. Images are only held in RAM for that one request, never saved.
+- `/search question:<text>` or `!search <text>` - look it up on the web first, then answer.
 - `/reset` or `!reset` - forget this channel's conversation.
+
+Questions that sound time-sensitive (today, latest, news, price, weather, score, a year like 2026, 今天, 最新, 新闻, 价格, 天气 ...) are searched automatically. Search results are used for that one answer only and are never saved.
 
 The bot remembers the last 10 messages per channel (in RAM, trimmed to ~3000 tokens), answers one request at a time in order, shows "typing...", splits replies over 2000 characters, and says so politely if LM Studio is offline.
 

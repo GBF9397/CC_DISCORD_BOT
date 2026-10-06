@@ -3,6 +3,7 @@ import asyncio
 import base64
 import os
 from collections import defaultdict, deque
+from datetime import date
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
@@ -12,6 +13,12 @@ SYSTEM_PROMPT = (
     "each user message starts with their name. Always reply in the language "
     "the user wrote in (English or Chinese). You have no tools: you cannot "
     "read files, run commands or browse the web, so never claim to."
+)
+
+SEARCH_NOTE = (
+    "[Today is {today}. The bot searched the web for the message below. Use these "
+    "results for anything current and prefer them over what you remember; name the "
+    "source site when it helps. If they don't answer it, say so.]\n\n{results}\n\n[Message]\n"
 )
 
 OFFLINE_MESSAGE = "Sorry, my brain (LM Studio) is offline right now. Try again in a bit."
@@ -59,9 +66,12 @@ class Brain:
         self.top_p = top_p
         self._lock = asyncio.Lock()  # asyncio locks wake waiters in FIFO order
 
-    async def ask(self, channel_id, user_name, text, images=()):
-        """images: (bytes, mime type) pairs, sent to the model and never stored."""
+    async def ask(self, channel_id, user_name, text, images=(), search_results=""):
+        """images: (bytes, mime type) pairs, sent to the model and never stored.
+        search_results: web results sent to the model once, never stored."""
         user_msg = remembered = f"{user_name}: {text}"
+        if search_results:
+            user_msg = SEARCH_NOTE.format(today=f"{date.today():%A %d %B %Y}", results=search_results) + user_msg
         if images:
             remembered += f" [sent {len(images)} image(s)]"
             user_msg = [{"type": "text", "text": user_msg}] + [
