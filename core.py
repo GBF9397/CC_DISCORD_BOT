@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import os
+import re
 from collections import defaultdict, deque
 from datetime import date
 
@@ -42,6 +43,43 @@ PERSONAS = {
 }
 DEFAULT_PERSONA = "buddy"
 CUSTOM_MAX_CHARS = 300
+
+# The server's own custom emoji (incl. animated GIF ones) and stickers, offered to the model.
+EXTRAS_NOTE = (
+    "\n\nThis server has custom emoji you may drop into a reply now and then by writing "
+    "them as :name:. Available: {emoji}."
+)
+STICKER_NOTE = (
+    "\n\nThis time you may also send ONE of the server's stickers if it really fits the "
+    "mood: put [sticker: name] at the very end of your reply. Usually don't. Available: {stickers}."
+)
+STICKER_TAG = re.compile(r"\s*\[sticker:\s*([^\]]+)\]", re.IGNORECASE)
+EMOJI_TAG = re.compile(r"(?<![<\w]):([\w~-]{2,32}):")
+MAX_EXTRAS = 50  # names listed per kind, to keep the prompt small
+
+
+def extras_note(emoji_names, sticker_names):
+    """System-prompt text listing what the model may use; empty when the server has none."""
+    note = ""
+    if emoji_names:
+        note += EXTRAS_NOTE.format(emoji=", ".join(list(emoji_names)[:MAX_EXTRAS]))
+    if sticker_names:
+        note += STICKER_NOTE.format(stickers=", ".join(list(sticker_names)[:MAX_EXTRAS]))
+    return note
+
+
+def apply_extras(reply, emojis, stickers):
+    """emojis: name -> Discord emoji text like <:name:id>; stickers: name -> sticker.
+    Turns :name: into real emoji and pulls out one [sticker: name] tag.
+    Returns (text, sticker or None). Unknown names are left as plain text or dropped."""
+    sticker = None
+    match = STICKER_TAG.search(reply)
+    if match:
+        sticker = stickers.get(match.group(1).strip().strip(":"))
+    reply = STICKER_TAG.sub("", reply).strip()
+    reply = EMOJI_TAG.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
+    return (reply if reply or sticker else "..."), sticker
+
 
 OFFLINE_MESSAGE = "Sorry, my brain (LM Studio) is offline right now. Try again in a bit."
 ERROR_MESSAGE = "Sorry, something went wrong while thinking. Try again in a bit."
@@ -97,9 +135,10 @@ class Brain:
         self._personas[channel_id] = text
         self.memory.reset(channel_id)
 
-    async def ask(self, channel_id, user_name, text, images=(), search_results=""):
+    async def ask(self, channel_id, user_name, text, images=(), search_results="", extras=""):
         """images: (bytes, mime type) pairs, sent to the model and never stored.
-        search_results: web results sent to the model once, never stored."""
+        search_results: web results sent to the model once, never stored.
+        extras: extras_note() text about the server's emoji and stickers."""
         user_msg = remembered = f"{user_name}: {text}"
         if search_results:
             user_msg = SEARCH_NOTE.format(today=f"{date.today():%A %d %B %Y}", results=search_results) + user_msg
@@ -111,7 +150,7 @@ class Brain:
                 for data, mime in images
             ]
         async with self._lock:
-            messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id)}]
+            messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id) + extras}]
             messages += self.memory.get(channel_id)
             messages.append({"role": "user", "content": user_msg})
             try:
@@ -128,7 +167,8 @@ class Brain:
             # Gemma 4 puts its reasoning in reasoning_content; only content is posted.
             reply = (resp.choices[0].message.content or "").strip() or "..."
             self.memory.add(channel_id, "user", remembered)
-            self.memory.add(channel_id, "assistant", reply)
+            # Forget sticker tags so the model doesn't copy them into every reply.
+            self.memory.add(channel_id, "assistant", STICKER_TAG.sub("", reply).strip() or "...")
             return reply
 
 

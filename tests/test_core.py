@@ -85,3 +85,16 @@ async def test_persona_is_per_channel_and_switch_clears_memory(mock_api):
     await brain.ask(2, "Bo", "hello")
     assert mock_api.requests[1]["messages"][0]["content"].endswith(PERSONAS["pirate"])
     assert mock_api.requests[2]["messages"][0]["content"].endswith(PERSONAS[DEFAULT_PERSONA])
+
+
+def test_apply_extras_converts_emoji_and_pulls_sticker():
+    from core import apply_extras, extras_note
+    emojis, stickers = {"pepe": "<:pepe:1>"}, {"catjam": "STICKER"}
+    assert apply_extras("hi :pepe: at 12:30:00 <:pepe:1> :nope:", emojis, {}) == \
+        ("hi <:pepe:1> at 12:30:00 <:pepe:1> :nope:", None)
+    assert apply_extras("ok [Sticker: catjam]", emojis, stickers) == ("ok", "STICKER")
+    assert apply_extras("[sticker: catjam]", emojis, stickers) == ("", "STICKER")
+    assert apply_extras("[sticker: unknown]", emojis, stickers) == ("...", None)
+    assert extras_note({}, {}) == ""
+    assert "pepe" in extras_note(emojis, {}) and "sticker" not in extras_note(emojis, {})
+    assert "catjam" in extras_note({}, stickers)

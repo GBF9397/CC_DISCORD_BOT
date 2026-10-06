@@ -20,13 +20,14 @@ class FakeChannel:
     def typing(self):
         return self._typing()
 
-    async def send(self, text):
-        self.sent.append(text)
+    async def send(self, text=None, stickers=None):
+        self.sent.append(text if stickers is None else stickers)
 
 
 class FakeMessage:
-    def __init__(self, content, channel, author_id=1, bot=False, mentions=(), attachments=()):
+    def __init__(self, content, channel, author_id=1, bot=False, mentions=(), attachments=(), guild=None):
         self.content = content
+        self.guild = guild
         self.attachments = list(attachments)
         self.channel = channel
         self.author = SimpleNamespace(id=author_id, bot=bot, display_name=f"user{author_id}")
@@ -115,7 +116,7 @@ async def test_slash_commands_registered_and_work(mock_api):
     async def defer(thinking=False):
         pass
     interaction = SimpleNamespace(
-        user=SimpleNamespace(id=5, display_name="member"), channel_id=CHANNEL,
+        user=SimpleNamespace(id=5, display_name="member"), channel_id=CHANNEL, guild=None,
         response=SimpleNamespace(defer=defer), followup=SimpleNamespace(send=followup_send))
     await bot.tree.get_command("ask").callback(interaction, "what is 2+2?")
     assert sent == ["echo: member: what is 2+2?"]
@@ -187,3 +188,32 @@ async def test_persona_command_switches_and_shows(mock_api):
 
     await cmd(interaction, None, None)
     assert said[-1][1] and "grumpy cat" in said[-1][0] and "pirate" in said[-1][0]
+
+
+class FakeEmoji(SimpleNamespace):
+    def __str__(self):
+        return f"<a:{self.name}:42>"
+
+
+async def test_uses_server_emoji_and_sometimes_a_sticker(mock_api, monkeypatch):
+    import bot as bot_module
+    guild = SimpleNamespace(emojis=[FakeEmoji(name="pepe", available=True), FakeEmoji(name="gone", available=False)],
+                            stickers=[SimpleNamespace(name="catjam", available=True)])
+    mock_api.reply = "lol :pepe: :gone: [sticker: catjam]"
+    bot = make_bot(mock_api.base_url)
+    ch = FakeChannel(BOT_CHANNEL)
+
+    monkeypatch.setattr(bot_module.random, "random", lambda: 0.0)  # offer stickers this time
+    msg = FakeMessage("hi", ch, guild=guild)
+    await bot.on_message(msg)
+    system = mock_api.requests[0]["messages"][0]["content"]
+    assert "pepe" in system and "gone" not in system and "catjam" in system
+    assert msg.replies == ["lol <a:pepe:42> :gone:"]
+    assert ch.sent == [[guild.stickers[0]]]
+    assert "[sticker" not in bot.memory.get(BOT_CHANNEL)[-1]["content"]
+
+    monkeypatch.setattr(bot_module.random, "random", lambda: 0.99)  # no stickers offered
+    ch.sent.clear()
+    await bot.on_message(FakeMessage("again", ch, guild=guild))
+    assert "catjam" not in mock_api.requests[1]["messages"][0]["content"]
+    assert ch.sent == []

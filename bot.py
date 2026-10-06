@@ -1,18 +1,21 @@
 """Discord chat bot backed by the local Gemma 4 Bionic model in LM Studio."""
 import logging
 import os
+import random
 import sys
 
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
 
-from core import CUSTOM_MAX_CHARS, PERSONAS, Brain, ChannelMemory, load_config, split_message
+from core import (CUSTOM_MAX_CHARS, PERSONAS, Brain, ChannelMemory, apply_extras, extras_note,
+                  load_config, split_message)
 from search import needs_search, web_search
 
 log = logging.getLogger("bot")
 
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+STICKER_CHANCE = 0.2  # share of chat replies where the model is offered stickers
 
 
 def lower_priority():
@@ -45,12 +48,21 @@ class ChatBot(discord.Client):
         allowed = self.config["allowed_users"]
         return not allowed or user.id in allowed
 
-    async def answer(self, channel_id, user_name, text, images=(), search=False):
+    async def answer(self, channel_id, user_name, text, images=(), search=False, guild=None, stickers=False):
+        """Returns (reply text, sticker to send or None). Uses the server's own custom
+        emoji, and on some replies (stickers=True) one of its stickers."""
         results = ""
         if text and (search or needs_search(text)):
             log.info("Searching the web for a message in channel %s", channel_id)
             results = await web_search(text)
-        return await self.brain.ask(channel_id, user_name, text, images, results)
+        emojis, sticker_map = {}, {}
+        if guild is not None:
+            emojis = {e.name: str(e) for e in guild.emojis if e.available}
+            if stickers and random.random() < STICKER_CHANCE:
+                sticker_map = {s.name: s for s in guild.stickers if s.available}
+        reply = await self.brain.ask(channel_id, user_name, text, images, results,
+                                     extras_note(emojis, sticker_map))
+        return apply_extras(reply, emojis, sticker_map)
 
     def _add_slash_commands(self):
         @self.tree.command(name="ask", description="Ask the bot something")
@@ -59,7 +71,8 @@ class ChatBot(discord.Client):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
             await interaction.response.defer(thinking=True)
-            reply = await self.answer(interaction.channel_id, interaction.user.display_name, question)
+            reply, _ = await self.answer(interaction.channel_id, interaction.user.display_name, question,
+                                         guild=interaction.guild)
             for chunk in split_message(reply):
                 await interaction.followup.send(chunk)
 
@@ -69,7 +82,8 @@ class ChatBot(discord.Client):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
             await interaction.response.defer(thinking=True)
-            reply = await self.answer(interaction.channel_id, interaction.user.display_name, question, search=True)
+            reply, _ = await self.answer(interaction.channel_id, interaction.user.display_name, question, search=True,
+                                         guild=interaction.guild)
             for chunk in split_message(reply):
                 await interaction.followup.send(chunk)
 
@@ -147,11 +161,15 @@ class ChatBot(discord.Client):
         async with message.channel.typing():
             # Image bytes stay in RAM for this one request only.
             images = [(await a.read(), a.content_type.split(";")[0]) for a in image_files]
-            reply = await self.answer(message.channel.id, message.author.display_name, text, images, search)
+            reply, sticker = await self.answer(message.channel.id, message.author.display_name, text,
+                                               images, search, message.guild, stickers=True)
         chunks = split_message(reply)
-        await message.reply(chunks[0], mention_author=False)
+        if chunks:  # empty when the model answered with only a sticker
+            await message.reply(chunks[0], mention_author=False)
         for chunk in chunks[1:]:
             await message.channel.send(chunk)
+        if sticker:
+            await message.channel.send(stickers=[sticker])
 
 
 def main():
