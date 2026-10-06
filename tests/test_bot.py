@@ -47,9 +47,10 @@ class FakeAttachment:
         return self.data
 
 
-def make_bot(url, allowed=()):
+def make_bot(url, allowed=(), stickers=True):
     bot = ChatBot({"token": "x", "base_url": url, "model": "gemma4-12b-bionic-v2",
-                   "channel_ids": {BOT_CHANNEL, BOT_CHANNEL_2}, "allowed_users": set(allowed)})
+                   "channel_ids": {BOT_CHANNEL, BOT_CHANNEL_2}, "allowed_users": set(allowed),
+                   "stickers": stickers})
     bot._connection.user = SimpleNamespace(id=BOT_ID)
     return bot
 
@@ -243,6 +244,29 @@ async def test_learns_emoji_meanings_from_pictures_once(mock_api, monkeypatch):
     assert fetched == ["https://cdn.discordapp.com/emojis/7.png", "https://x/8.png"]
     assert bot.meanings == {7: "happy dancing cat", 8: "happy dancing cat"}
     assert mock_api.requests[0]["messages"][0]["content"][1]["image_url"]["url"] == "data:image/png;base64,UE5H"
+
+
+async def test_stickers_off_never_learns_or_sends_them(mock_api, monkeypatch):
+    import discord
+    import bot as bot_module
+    monkeypatch.setattr(bot_module, "load_meanings", lambda: {})
+    monkeypatch.setattr(bot_module.random, "random", lambda: 0.0)
+    mock_api.reply = "lol [sticker: catjam]"
+    bot = make_bot(mock_api.base_url, stickers=False)
+    fetched = []
+    async def get_from_cdn(url):
+        fetched.append(url)
+        return b"PNG"
+    bot.http.get_from_cdn = get_from_cdn
+    guild = SimpleNamespace(emojis=[], stickers=[SimpleNamespace(
+        id=3, name="catjam", available=True, description="", emoji="", url="https://x/3.png",
+        format=discord.StickerFormatType.png)])
+    await bot.learn_meanings(guild)
+    assert fetched == []
+    ch = FakeChannel(BOT_CHANNEL)
+    await bot.on_message(FakeMessage("hi", ch, guild=guild))
+    assert "catjam" not in mock_api.requests[0]["messages"][0]["content"]
+    assert ch.sent == []
 
 
 async def test_learns_from_how_members_use_emoji(mock_api, monkeypatch):

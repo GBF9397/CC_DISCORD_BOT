@@ -275,4 +275,5 @@ def load_config():
         "channel_ids": ids("BOT_CHANNEL_ID"),
         "allowed_users": ids("ALLOWED_USER_IDS"),
         "unfiltered": os.getenv("UNFILTERED_MODE", "").strip().lower() in ("1", "on", "true", "yes"),
+        "stickers": os.getenv("STICKERS", "").strip().lower() in ("1", "on", "true", "yes"),
     }

@@ -101,7 +101,7 @@ class ChatBot(discord.Client):
         hand = load_meanings()  # no need to guess these
         items = [(e.id, f"{CDN}/emojis/{e.id}.png")  # .png = first frame of GIFs
                  for e in guild.emojis if e.name not in hand]
-        items += [(s.id, s.url) for s in guild.stickers if s.name not in hand
+        items += [(s.id, s.url) for s in guild.stickers if self.config.get("stickers") and s.name not in hand
                   and s.format in (discord.StickerFormatType.png, discord.StickerFormatType.apng)]
         for item_id, url in items:
             if item_id in self.meanings:
@@ -240,7 +240,8 @@ class ChatBot(discord.Client):
             # Image bytes stay in RAM for this one request only.
             images = [(await a.read(), a.content_type.split(";")[0]) for a in image_files]
             reply, sticker = await self.answer(message.channel.id, message.author.display_name, text,
-                                               images, search, message.guild, stickers=True)
+                                               images, search, message.guild,
+                                               stickers=self.config.get("stickers", False))
         chunks = split_message(reply)
         if chunks:  # empty when the model answered with only a sticker
             await message.reply(chunks[0], mention_author=False)

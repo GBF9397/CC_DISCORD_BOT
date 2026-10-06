@@ -121,6 +121,7 @@ async def test_unfiltered_mode_is_off_by_default_and_loosens_prompt_when_on(mock
     from core import UNFILTERED_NOTE, load_config
     monkeypatch.delenv("UNFILTERED_MODE", raising=False)
     assert load_config()["unfiltered"] is False
+    assert load_config()["stickers"] is False
     monkeypatch.setenv("UNFILTERED_MODE", "on")
     assert load_config()["unfiltered"] is True
     await make_brain(mock_api.base_url).ask(1, "Ep", "hi")
