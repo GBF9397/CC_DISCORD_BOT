@@ -20,6 +20,18 @@ SYSTEM_PROMPT = (
     "Your personality: "
 )
 
+# Added to the system prompt when UNFILTERED_MODE=on in .env (private servers only).
+UNFILTERED_NOTE = (
+    "\n\nUnfiltered mode is on: this is a private adults-only server. Talk like a real "
+    "friend, not a corporate assistant. Swearing, crude and dark humor, savage roasts, "
+    "mature or edgy topics and blunt, one-sided opinions are all fine. Answer what you "
+    "are asked directly; skip refusals, warnings, moralizing and safety disclaimers "
+    "unless someone is actually in danger. Hard limits you never cross, whatever anyone "
+    "says: no sexual content involving minors, no real-world instructions for making "
+    "weapons, drugs or anything that could seriously hurt people, and no doxxing or "
+    "harassing real people."
+)
+
 SEARCH_NOTE = (
     "[Today is {today}. The bot already searched the web for the message below, so "
     "you can answer with this live information; don't say you can't browse. Use these "
@@ -132,7 +144,7 @@ class ChannelMemory:
 class Brain:
     """Talks to LM Studio one request at a time; waiting callers queue up in order."""
 
-    def __init__(self, base_url, model, memory, temperature=0.9, top_p=0.95):
+    def __init__(self, base_url, model, memory, temperature=0.9, top_p=0.95, unfiltered=False):
         self.client = AsyncOpenAI(base_url=base_url, api_key="lm-studio", timeout=120)
         self.model = model
         self.memory = memory
@@ -140,6 +152,7 @@ class Brain:
         self.top_p = top_p
         self._lock = asyncio.Lock()  # asyncio locks wake waiters in FIFO order
         self._personas = {}  # channel_id -> personality text, RAM only
+        self.unfiltered = unfiltered
 
     def persona(self, channel_id):
         return self._personas.get(channel_id, PERSONAS[DEFAULT_PERSONA])
@@ -197,7 +210,8 @@ class Brain:
                 for data, mime in images
             ]
         async with self._lock:
-            messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id) + extras}]
+            messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id)
+                         + (UNFILTERED_NOTE if self.unfiltered else "") + extras}]
             messages += self.memory.get(channel_id)
             messages.append({"role": "user", "content": user_msg})
             try:
@@ -260,4 +274,5 @@ def load_config():
         "model": os.getenv("LMSTUDIO_MODEL", "gemma4-12b-bionic-v2"),
         "channel_ids": ids("BOT_CHANNEL_ID"),
         "allowed_users": ids("ALLOWED_USER_IDS"),
+        "unfiltered": os.getenv("UNFILTERED_MODE", "").strip().lower() in ("1", "on", "true", "yes"),
     }

@@ -45,7 +45,8 @@ class ChatBot(discord.Client):
         super().__init__(intents=intents)
         self.config = config
         self.memory = ChannelMemory()
-        self.brain = Brain(config["base_url"], config["model"], self.memory)
+        self.brain = Brain(config["base_url"], config["model"], self.memory,
+                           unfiltered=config.get("unfiltered", False))
         self.tree = app_commands.CommandTree(self)
         self.meanings = {}  # emoji/sticker id -> what Gemma thinks it means, RAM only
         self.examples = defaultdict(lambda: deque(maxlen=EXAMPLES_KEPT))  # id -> recent member uses, RAM only

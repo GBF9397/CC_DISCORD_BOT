@@ -115,3 +115,17 @@ def test_load_meanings_reads_name_colon_meaning(tmp_path):
                  encoding="utf-8")
     assert load_meanings(f) == {"catstare": "speechless at nonsense", "awk": "awkward"}
     assert load_meanings(tmp_path / "missing.txt") == {}
+
+
+async def test_unfiltered_mode_is_off_by_default_and_loosens_prompt_when_on(mock_api, monkeypatch):
+    from core import UNFILTERED_NOTE, load_config
+    monkeypatch.delenv("UNFILTERED_MODE", raising=False)
+    assert load_config()["unfiltered"] is False
+    monkeypatch.setenv("UNFILTERED_MODE", "on")
+    assert load_config()["unfiltered"] is True
+    await make_brain(mock_api.base_url).ask(1, "Ep", "hi")
+    assert UNFILTERED_NOTE not in mock_api.requests[-1]["messages"][0]["content"]
+    brain = Brain(mock_api.base_url, "gemma4-12b-bionic-v2", ChannelMemory(), unfiltered=True)
+    await brain.ask(1, "Ep", "hi")
+    system = mock_api.requests[-1]["messages"][0]["content"]
+    assert UNFILTERED_NOTE in system and "minors" in system
