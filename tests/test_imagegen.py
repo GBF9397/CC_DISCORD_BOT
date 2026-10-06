@@ -276,3 +276,20 @@ REAL_SLEEP = asyncio.sleep
 
 async def fast_sleep(seconds):
     await REAL_SLEEP(0)
+
+
+async def test_each_request_keeps_its_own_style_in_order(mock_api, comfy, events):
+    comfy.delay = 0.1
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    requests = ["!draw 小猫", "!draw realistic 中世纪城堡", "!draw anime 花", "!draw 热血主角", "!draw realistic 跑车"]
+    for user, text in enumerate(requests, start=1):
+        await bot.on_message(FakeMessage(text, ch, author_id=user))
+    await bot.on_message(FakeMessage("!style realistic", ch, author_id=9))  # ignored while busy
+    await finish(bot)
+    names = [job["1"]["inputs"]["ckpt_name"] for job in comfy.jobs]
+    assert names == ["model.safetensors", "photo.safetensors", "model.safetensors",
+                     "model.safetensors", "photo.safetensors"]
+    asked = [r["messages"][0]["content"] for r in mock_api.requests]
+    assert ["小猫" in a for a in asked] == [True, False, False, False, False]
+    assert "realistic" not in asked[1] and "中世纪城堡" in asked[1]

@@ -66,7 +66,7 @@ class ImageMaker:
         self.comfy_dir = comfy_dir  # ComfyUI_windows_portable folder, to start it when it's off
         self.startup_wait = startup_wait
         self.drawing = False  # while True the bot only takes picture requests
-        self.queue = deque()  # (request, channel_id, user_id, deliver, refine), RAM only
+        self.queue = deque()  # (request, channel_id, user_id, deliver, refine, checkpoint), RAM only
         self.waiting = set()  # members with a picture queued or being drawn
         self.last = {}  # channel_id -> (prompt, seed, checkpoint) of its last picture, RAM only
         self.styles = {}  # channel_id -> style name, RAM only
@@ -93,7 +93,16 @@ class ImageMaker:
             raise DrawError(NOTHING_TO_REFINE)
         ahead = len(self.waiting)
         self.waiting.add(user_id)
-        self.queue.append((request, channel_id, user_id, deliver, refine))
+        checkpoint = None  # a refine reuses its picture's model
+        if not refine:
+            # The style is fixed now, so a later /drawstyle doesn't change queued pictures.
+            # A request may start with a style name: "realistic a sports car".
+            first, _, rest = request.partition(" ")
+            style = self.style(channel_id)
+            if first.lower() in self.checkpoints and rest.strip():
+                style, request = first.lower(), rest.strip()
+            checkpoint = self.checkpoints[style]
+        self.queue.append((request, channel_id, user_id, deliver, refine, checkpoint))
         if not self.drawing:
             self.drawing = True  # set before any await so the bot goes silent at once
             self._worker = asyncio.create_task(self._work())
@@ -120,7 +129,7 @@ class ImageMaker:
         """Gemma (still loaded) writes the prompt for each queued picture."""
         jobs = []
         while self.queue:
-            request, channel_id, user_id, deliver, refine = self.queue.popleft()
+            request, channel_id, user_id, deliver, refine, checkpoint = self.queue.popleft()
             if refine and channel_id not in self.last:
                 await self._deliver(deliver, user_id, None, NOTHING_TO_REFINE)
                 continue
@@ -129,7 +138,6 @@ class ImageMaker:
                 instruction = REFINER.format(prompt=old, request=request)
             else:
                 seed, instruction = random.randrange(2**32), PROMPT_WRITER.format(request=request)
-                checkpoint = self.checkpoints[self.style(channel_id)]
             prompt = await self.brain.image_prompt(instruction)
             if prompt is None:
                 await self._deliver(deliver, user_id, None, "Sorry, my brain (LM Studio) is offline right now.")

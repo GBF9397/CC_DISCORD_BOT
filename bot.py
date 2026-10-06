@@ -269,6 +269,7 @@ class ChatBot(discord.Client):
             await interaction.response.send_message(notice, ephemeral=not notice.startswith("🎨"))  # refusals only to the asker
 
         @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until all pictures are done)")
+        @app_commands.describe(request="What to draw; start with anime or realistic to pick the style")
         async def draw(interaction: discord.Interaction, request: str):
             await draw_command(interaction, request, refine=False)
 
