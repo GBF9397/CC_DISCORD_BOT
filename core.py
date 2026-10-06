@@ -47,7 +47,7 @@ CUSTOM_MAX_CHARS = 300
 # The server's own custom emoji (incl. animated GIF ones) and stickers, offered to the model.
 EXTRAS_NOTE = (
     "\n\nThis server has custom emoji you may drop into a reply now and then by writing "
-    "them as :name:. Available: {emoji}."
+    "them as :name:, picking one whose meaning fits your mood. Available: {emoji}."
 )
 STICKER_NOTE = (
     "\n\nThis time you may also send ONE of the server's stickers if it really fits the "
@@ -59,7 +59,8 @@ MAX_EXTRAS = 50  # names listed per kind, to keep the prompt small
 
 
 def extras_note(emoji_names, sticker_names):
-    """System-prompt text listing what the model may use; empty when the server has none."""
+    """System-prompt text listing what the model may use; empty when the server has none.
+    Names may carry a meaning in brackets, e.g. "catcry (sad crying cat)"."""
     note = ""
     if emoji_names:
         note += EXTRAS_NOTE.format(emoji=", ".join(list(emoji_names)[:MAX_EXTRAS]))
@@ -80,6 +81,9 @@ def apply_extras(reply, emojis, stickers):
     reply = EMOJI_TAG.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
     return (reply if reply or sticker else "..."), sticker
 
+
+DESCRIBE_PROMPT = ("This is a custom Discord emoji or sticker. In at most 6 words, say what "
+                   "emotion or meaning it shows when people use it in chat. Answer with just that.")
 
 OFFLINE_MESSAGE = "Sorry, my brain (LM Studio) is offline right now. Try again in a bit."
 ERROR_MESSAGE = "Sorry, something went wrong while thinking. Try again in a bit."
@@ -134,6 +138,21 @@ class Brain:
         """Switch this channel's personality and forget the chat, so the old voice doesn't linger."""
         self._personas[channel_id] = text
         self.memory.reset(channel_id)
+
+    async def describe(self, image, mime="image/png"):
+        """A few words on what an emoji/sticker picture means, or "" if the model can't say."""
+        url = f"data:{mime};base64,{base64.b64encode(image).decode()}"
+        async with self._lock:
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=self.model, temperature=0.2,
+                    messages=[{"role": "user", "content": [
+                        {"type": "text", "text": DESCRIBE_PROMPT},
+                        {"type": "image_url", "image_url": {"url": url}}]}],
+                )
+            except (APIConnectionError, APITimeoutError, APIStatusError):
+                return ""
+        return " ".join((resp.choices[0].message.content or "").split())[:60]
 
     async def ask(self, channel_id, user_name, text, images=(), search_results="", extras=""):
         """images: (bytes, mime type) pairs, sent to the model and never stored.

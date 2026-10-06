@@ -16,6 +16,7 @@ log = logging.getLogger("bot")
 
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 STICKER_CHANCE = 0.2  # share of chat replies where the model is offered stickers
+CDN = "https://cdn.discordapp.com"
 
 
 def lower_priority():
@@ -42,6 +43,7 @@ class ChatBot(discord.Client):
         self.memory = ChannelMemory()
         self.brain = Brain(config["base_url"], config["model"], self.memory)
         self.tree = app_commands.CommandTree(self)
+        self.meanings = {}  # emoji/sticker id -> what Gemma thinks it means, RAM only
         self._add_slash_commands()
 
     def allowed(self, user):
@@ -55,14 +57,49 @@ class ChatBot(discord.Client):
         if text and (search or needs_search(text)):
             log.info("Searching the web for a message in channel %s", channel_id)
             results = await web_search(text)
-        emojis, sticker_map = {}, {}
+        emojis, sticker_map, labels, sticker_labels = {}, {}, [], []
         if guild is not None:
-            emojis = {e.name: str(e) for e in guild.emojis if e.available}
+            for e in guild.emojis:
+                if e.available:
+                    emojis[e.name] = str(e)
+                    labels.append(self.label(e.name, self.meanings.get(e.id)))
             if stickers and random.random() < STICKER_CHANCE:
-                sticker_map = {s.name: s for s in guild.stickers if s.available}
+                for s in guild.stickers:
+                    if s.available:
+                        sticker_map[s.name] = s
+                        sticker_labels.append(self.label(
+                            s.name, self.meanings.get(s.id) or s.description, s.emoji))
         reply = await self.brain.ask(channel_id, user_name, text, images, results,
-                                     extras_note(emojis, sticker_map))
+                                     extras_note(labels, sticker_labels))
         return apply_extras(reply, emojis, sticker_map)
+
+    @staticmethod
+    def label(name, *hints):
+        hints = [h for h in hints if h]
+        return f"{name} ({', '.join(hints)})" if hints else name
+
+    async def learn_meanings(self, guild):
+        """Show each new emoji/sticker picture to Gemma once so it knows what it means."""
+        items = [(e.id, f"{CDN}/emojis/{e.id}.png") for e in guild.emojis]  # .png = first frame of GIFs
+        items += [(s.id, s.url) for s in guild.stickers
+                  if s.format in (discord.StickerFormatType.png, discord.StickerFormatType.apng)]
+        for item_id, url in items:
+            if item_id in self.meanings:
+                continue
+            try:
+                image = await self.http.get_from_cdn(url)
+            except discord.HTTPException:
+                continue
+            meaning = await self.brain.describe(image)
+            if meaning:
+                self.meanings[item_id] = meaning
+        log.info("Know the meaning of %d emoji/stickers in %s", len(self.meanings), guild)
+
+    async def on_guild_emojis_update(self, guild, before, after):
+        await self.learn_meanings(guild)
+
+    async def on_guild_stickers_update(self, guild, before, after):
+        await self.learn_meanings(guild)
 
     def _add_slash_commands(self):
         @self.tree.command(name="ask", description="Ask the bot something")
@@ -129,6 +166,8 @@ class ChatBot(discord.Client):
                 log.warning("BOT_CHANNEL_ID %s not found: wrong ID, or the bot can't view that channel", channel_id)
             else:
                 log.info("Answering every message in #%s", self.get_channel(channel_id))
+        for guild in self.guilds:
+            await self.learn_meanings(guild)
 
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars, %d attachments)",

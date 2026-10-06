@@ -197,17 +197,19 @@ class FakeEmoji(SimpleNamespace):
 
 async def test_uses_server_emoji_and_sometimes_a_sticker(mock_api, monkeypatch):
     import bot as bot_module
-    guild = SimpleNamespace(emojis=[FakeEmoji(name="pepe", available=True), FakeEmoji(name="gone", available=False)],
-                            stickers=[SimpleNamespace(name="catjam", available=True)])
+    guild = SimpleNamespace(
+        emojis=[FakeEmoji(id=1, name="pepe", available=True), FakeEmoji(id=2, name="gone", available=False)],
+        stickers=[SimpleNamespace(id=3, name="catjam", available=True, description="dancing cat", emoji="cat")])
     mock_api.reply = "lol :pepe: :gone: [sticker: catjam]"
     bot = make_bot(mock_api.base_url)
+    bot.meanings[1] = "smug laugh"
     ch = FakeChannel(BOT_CHANNEL)
 
     monkeypatch.setattr(bot_module.random, "random", lambda: 0.0)  # offer stickers this time
     msg = FakeMessage("hi", ch, guild=guild)
     await bot.on_message(msg)
     system = mock_api.requests[0]["messages"][0]["content"]
-    assert "pepe" in system and "gone" not in system and "catjam" in system
+    assert "pepe (smug laugh)" in system and "gone" not in system and "catjam (dancing cat, cat)" in system
     assert msg.replies == ["lol <a:pepe:42> :gone:"]
     assert ch.sent == [[guild.stickers[0]]]
     assert "[sticker" not in bot.memory.get(BOT_CHANNEL)[-1]["content"]
@@ -217,3 +219,23 @@ async def test_uses_server_emoji_and_sometimes_a_sticker(mock_api, monkeypatch):
     await bot.on_message(FakeMessage("again", ch, guild=guild))
     assert "catjam" not in mock_api.requests[1]["messages"][0]["content"]
     assert ch.sent == []
+
+
+async def test_learns_emoji_meanings_from_pictures_once(mock_api):
+    import discord
+    mock_api.reply = "  happy\n dancing cat "
+    bot = make_bot(mock_api.base_url)
+    fetched = []
+    async def get_from_cdn(url):
+        fetched.append(url)
+        return b"PNG"
+    bot.http.get_from_cdn = get_from_cdn
+    guild = SimpleNamespace(
+        emojis=[FakeEmoji(id=7, name="cat", available=True)],
+        stickers=[SimpleNamespace(id=8, url="https://x/8.png", format=discord.StickerFormatType.png),
+                  SimpleNamespace(id=9, url="https://x/9.json", format=discord.StickerFormatType.lottie)])
+    await bot.learn_meanings(guild)
+    await bot.learn_meanings(guild)  # already known: not asked again
+    assert fetched == ["https://cdn.discordapp.com/emojis/7.png", "https://x/8.png"]
+    assert bot.meanings == {7: "happy dancing cat", 8: "happy dancing cat"}
+    assert mock_api.requests[0]["messages"][0]["content"][1]["image_url"]["url"] == "data:image/png;base64,UE5H"
