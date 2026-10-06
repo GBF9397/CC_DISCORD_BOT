@@ -4,10 +4,12 @@ Gemma writes the Stable Diffusion prompt, then leaves the GPU (lms unload); Comf
 draws, then frees its model; Gemma comes back (lms load). No Discord code here.
 """
 import asyncio
+import json
 import logging
 import random
 import re
 import shutil
+import uuid
 
 import aiohttp
 
@@ -140,38 +142,53 @@ class ImageMaker:
                 "model": ["1", 0], "positive": ["2", 0], "negative": ["3", 0],
                 "latent_image": ["4", 0]}},
             "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
-            # PreviewImage writes to ComfyUI's temp folder, which ComfyUI empties on start.
-            "7": {"class_type": "PreviewImage", "inputs": {"images": ["6", 0]}},
+            # SaveImageWebsocket (ships with ComfyUI) sends the PNG over the websocket,
+            # so the picture is never written to disk, only held in RAM.
+            "7": {"class_type": "SaveImageWebsocket", "inputs": {"images": ["6", 0]}},
         }
 
     async def _comfy(self, prompt, seed, checkpoint):
+        client = uuid.uuid4().hex
+        ws_url = self.comfy_url.replace("http", "ws", 1) + f"/ws?clientId={client}"
         try:
-            async with aiohttp.ClientSession() as http:
-                async with http.post(f"{self.comfy_url}/prompt",
-                                     json={"prompt": self._workflow(prompt, seed, checkpoint)}) as r:
+            async with aiohttp.ClientSession() as http, http.ws_connect(ws_url, max_msg_size=0) as ws:
+                async with http.post(f"{self.comfy_url}/prompt", json={
+                        "prompt": self._workflow(prompt, seed, checkpoint), "client_id": client}) as r:
                     body = await r.json(content_type=None)
                     if r.status != 200 or "prompt_id" not in body:
                         log.error("ComfyUI rejected the job: %s", str(body)[:500])
                         raise DrawError("Sorry, the image generator rejected the job.")
-                job = body["prompt_id"]
-                for _ in range(self.timeout):
-                    await asyncio.sleep(1)
-                    async with http.get(f"{self.comfy_url}/history/{job}") as r:
-                        history = await r.json(content_type=None)
-                    if job in history:
-                        break
-                else:
-                    raise DrawError("Sorry, the drawing took too long.")
-                for output in history[job].get("outputs", {}).values():
-                    for image in output.get("images", []):
-                        async with http.get(f"{self.comfy_url}/view", params=image) as r:
-                            if r.status == 200:
-                                return await r.read()
-                log.error("ComfyUI finished without an image: %s", str(history[job].get("status"))[:500])
-                raise DrawError("Sorry, the drawing failed.")
+                return await asyncio.wait_for(self._receive(ws, body["prompt_id"]), self.timeout)
+        except asyncio.TimeoutError:
+            raise DrawError("Sorry, the drawing took too long.")
         except aiohttp.ClientError as e:
             log.error("ComfyUI unreachable: %s", e)
             raise DrawError("Sorry, the image generator (ComfyUI) is offline.")
+
+    async def _receive(self, ws, job):
+        """Collects the PNG the save node sends; binary messages from other nodes are previews."""
+        node, png = None, None
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.BINARY:
+                if node == "7":
+                    png = msg.data[8:]  # 8-byte header: message type, image format
+            elif msg.type == aiohttp.WSMsgType.TEXT:
+                event = json.loads(msg.data)
+                data = event.get("data", {})
+                if data.get("prompt_id") != job:
+                    continue
+                if event["type"] == "execution_error":
+                    log.error("ComfyUI failed: %s", str(data.get("exception_message"))[:500])
+                    raise DrawError("Sorry, the drawing failed.")
+                if event["type"] == "execution_success":
+                    break
+                if event["type"] == "executing":
+                    node = data.get("node")
+                    if node is None:  # the whole job is done (older ComfyUI)
+                        break
+        if not png:
+            raise DrawError("Sorry, the drawing failed.")
+        return png
 
     async def _free_comfy(self):
         """Ask ComfyUI to drop its model from the GPU. Never raises."""

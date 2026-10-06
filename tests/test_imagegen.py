@@ -11,22 +11,39 @@ PNG = b"\x89PNG fake"
 
 
 class MockComfy:
+    """Speaks ComfyUI's /prompt + websocket protocol, sending a preview then the PNG."""
+
     def __init__(self, events, delay=0.0):
-        self.events, self.delay, self.jobs = events, delay, []
+        self.events, self.delay, self.jobs, self.sockets = events, delay, [], {}
+        self.fail = False
+
+    async def ws(self, request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        self.sockets[request.query["clientId"]] = ws
+        async for _ in ws:
+            pass
+        return ws
 
     async def prompt(self, request):
-        self.jobs.append((await request.json())["prompt"])
+        body = await request.json()
+        self.jobs.append(body["prompt"])
         self.events.append("comfy draw")
-        return web.json_response({"prompt_id": "job1"})
+        asyncio.create_task(self.run(self.sockets[body["client_id"]], f"job{len(self.jobs)}"))
+        return web.json_response({"prompt_id": f"job{len(self.jobs)}"})
 
-    async def history(self, request):
+    async def run(self, ws, job):
+        await asyncio.sleep(0.01)
+        await ws.send_json({"type": "executing", "data": {"node": "5", "prompt_id": job}})
+        await ws.send_bytes(b"\0\0\0\1\0\0\0\1" + b"PREVIEW")
         await asyncio.sleep(self.delay)
-        return web.json_response({"job1": {"outputs": {"7": {"images": [
-            {"filename": "a.png", "subfolder": "", "type": "temp"}]}}}})
-
-    async def view(self, request):
-        assert request.query["filename"] == "a.png" and request.query["type"] == "temp"
-        return web.Response(body=PNG)
+        if self.fail:
+            await ws.send_json({"type": "execution_error",
+                                "data": {"prompt_id": job, "exception_message": "out of memory"}})
+            return
+        await ws.send_json({"type": "executing", "data": {"node": "7", "prompt_id": job}})
+        await ws.send_bytes(b"\0\0\0\1\0\0\0\2" + PNG)
+        await ws.send_json({"type": "executing", "data": {"node": None, "prompt_id": job}})
 
     async def free(self, request):
         self.events.append("comfy free")
@@ -34,9 +51,8 @@ class MockComfy:
 
     async def start(self):
         app = web.Application()
+        app.router.add_get("/ws", self.ws)
         app.router.add_post("/prompt", self.prompt)
-        app.router.add_get("/history/{id}", self.history)
-        app.router.add_get("/view", self.view)
         app.router.add_post("/free", self.free)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
@@ -82,7 +98,7 @@ async def test_draw_takes_turns_on_the_gpu(mock_api, comfy, events):
     job = comfy.jobs[0]
     assert job["2"]["inputs"]["text"] == "a cat, watercolor"
     assert job["1"]["inputs"]["ckpt_name"] == "model.safetensors"
-    assert job["7"]["class_type"] == "PreviewImage"
+    assert job["7"]["class_type"] == "SaveImageWebsocket"
     assert "画一只猫" in mock_api.requests[0]["messages"][0]["content"]
     assert not maker.drawing
 
@@ -184,3 +200,15 @@ async def test_style_switch_picks_the_checkpoint_per_channel(mock_api, comfy, ev
     await bot.on_message(FakeMessage("!refine add snow", ch))
     names = [job["1"]["inputs"]["ckpt_name"] for job in comfy.jobs]
     assert names == ["photo.safetensors", "model.safetensors", "photo.safetensors"]  # refine keeps its model
+
+
+async def test_comfyui_error_is_reported_and_gemma_comes_back(mock_api, comfy, events):
+    comfy.fail = True
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "m"})
+    try:
+        await maker.draw("a cat", BOT_CHANNEL)
+        raise AssertionError("expected DrawError")
+    except DrawError as e:
+        assert str(e) == "Sorry, the drawing failed."
+    assert events[-2:] == ["comfy free", "lms load gemma4-12b-bionic-v2 --context-length 16384"]
+    assert not maker.drawing
