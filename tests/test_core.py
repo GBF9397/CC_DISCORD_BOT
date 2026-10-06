@@ -1,6 +1,6 @@
 import asyncio
 
-from core import OFFLINE_MESSAGE, Brain, ChannelMemory, split_message
+from core import DEFAULT_PERSONA, OFFLINE_MESSAGE, PERSONAS, Brain, ChannelMemory, split_message
 
 
 def make_brain(url):
@@ -14,7 +14,7 @@ async def test_reply_uses_content_not_reasoning(mock_api):
     assert "SECRET" not in reply
     sent = mock_api.requests[0]
     assert sent["model"] == "gemma4-12b-bionic-v2"
-    assert sent["temperature"] == 0.5 and sent["top_p"] == 0.95
+    assert sent["temperature"] == 0.9 and sent["top_p"] == 0.95
     assert sent["messages"][0]["role"] == "system"
     assert "tools" not in sent
 
@@ -72,3 +72,16 @@ def test_bot_channel_id_accepts_several_ids(monkeypatch):
     assert load_config()["channel_ids"] == {1556580599748108389, 1556584437339398144}
     monkeypatch.setenv("BOT_CHANNEL_ID", "")
     assert load_config()["channel_ids"] == set()
+
+
+async def test_persona_is_per_channel_and_switch_clears_memory(mock_api):
+    brain = make_brain(mock_api.base_url)
+    await brain.ask(1, "Ep", "hi")
+    assert mock_api.requests[0]["messages"][0]["content"].endswith(PERSONAS[DEFAULT_PERSONA])
+    assert "name" in mock_api.requests[0]["messages"][0]["content"]
+    brain.set_persona(1, PERSONAS["pirate"])
+    assert brain.memory.get(1) == []
+    await brain.ask(1, "Ep", "ahoy")
+    await brain.ask(2, "Bo", "hello")
+    assert mock_api.requests[1]["messages"][0]["content"].endswith(PERSONAS["pirate"])
+    assert mock_api.requests[2]["messages"][0]["content"].endswith(PERSONAS[DEFAULT_PERSONA])
