@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import os
+import random
 import re
 from collections import defaultdict, deque
 from datetime import date
@@ -102,6 +103,32 @@ def apply_extras(reply, emojis, stickers):
     reply = STICKER_TAG.sub("", reply).strip()
     reply = EMOJI_TAG.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
     return (reply if reply or sticker else "..."), sticker
+
+
+# Each chat reply draws a fresh length cap so answers stay short and varied.
+REPLY_LENGTHS = (10, 30, 50, 100)
+LENGTH_NOTE = (
+    "\n\nLength limit for this reply: at most {n} Chinese characters, or {n} words if you "
+    "reply in English (an emoji counts as one). Say less rather than stopping mid-sentence, "
+    "even if your earlier replies were longer."
+)
+# One length unit: a CJK character or punctuation mark, or a run of other non-space text.
+CJK = "\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef"
+LENGTH_UNIT = re.compile(f"[{CJK}]|[^\\s{CJK}]+")
+SENTENCE_END = re.compile(r"[。！？!?…~～]+|\.(?=\s|$)")
+
+
+def shorten(reply, limit):
+    """Safety net for replies over the limit: cut at the last sentence end that keeps
+    at least half the text, else cut at the limit and add an ellipsis."""
+    units = list(LENGTH_UNIT.finditer(reply))
+    if len(units) <= limit:
+        return reply
+    cut = reply[:units[limit - 1].end()]
+    ends = [m.end() for m in SENTENCE_END.finditer(cut)]
+    if ends and ends[-1] >= len(cut) // 2:
+        return cut[:ends[-1]].rstrip()
+    return cut.rstrip() + "…"
 
 
 DESCRIBE_PROMPT = ("This is a custom Discord emoji or sticker. In at most 6 words, say what "
@@ -226,9 +253,11 @@ class Brain:
                  "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
                 for data, mime in images
             ]
+        limit = random.choice(REPLY_LENGTHS)
         async with self._lock:
             messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id)
-                         + (UNFILTERED_NOTE if self.unfiltered else "") + extras}]
+                         + (UNFILTERED_NOTE if self.unfiltered else "") + extras
+                         + LENGTH_NOTE.format(n=limit)}]
             messages += self.memory.get(channel_id)
             messages.append({"role": "user", "content": user_msg})
             try:
@@ -244,6 +273,8 @@ class Brain:
                 return ERROR_MESSAGE
             # Gemma 4 puts its reasoning in reasoning_content; only content is posted.
             reply = (resp.choices[0].message.content or "").strip() or "..."
+            sticker = STICKER_TAG.search(reply)
+            reply = shorten(STICKER_TAG.sub("", reply).strip(), limit) + (sticker.group(0) if sticker else "")
             self.memory.add(channel_id, "user", remembered)
             # Forget sticker tags so the model doesn't copy them into every reply.
             self.memory.add(channel_id, "assistant", STICKER_TAG.sub("", reply).strip() or "...")

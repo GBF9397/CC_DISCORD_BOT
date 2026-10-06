@@ -108,7 +108,9 @@ async def test_bang_reset_clears_channel_memory(mock_api):
     assert bot.memory.get(BOT_CHANNEL) == []
 
 
-async def test_long_reply_is_split(mock_api):
+async def test_long_reply_is_split(mock_api, monkeypatch):
+    import core
+    monkeypatch.setattr(core, "shorten", lambda reply, limit: reply)  # test splitting alone
     mock_api.reply = "word " * 1000
     bot = make_bot(mock_api.base_url)
     ch = FakeChannel(BOT_CHANNEL)
