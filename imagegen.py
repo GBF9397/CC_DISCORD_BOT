@@ -27,8 +27,8 @@ PROMPT_WRITER = (
     "tags, subject first, then style, lighting and quality tags. Under 60 words. Reply "
     "with only the prompt. If the request is sexual and involves anyone who is or looks "
     "under 18, or is a sexual or degrading picture of a real person, reply only REFUSED. "
-    "If it names a character, person, place or thing whose look you are not sure of, "
-    "reply only SEARCH: <short English web search query about its appearance>.\n\n"
+    "If it names a specific character, person, place, product or artwork (a proper name, "
+    "even one you think you know), reply only SEARCH: <name, its series, appearance>.\n\n"
     "[Request]\n{request}"
 )
 # For /refine: change the channel's last prompt; the same seed keeps the overall look.
@@ -39,8 +39,8 @@ REFINER = (
     "background) so those stay the same. Reply with only the new prompt, comma-separated English "
     "tags, under 60 words. If the change makes it sexual and involving anyone who is or "
     "looks under 18, or a sexual or degrading picture of a real person, reply only REFUSED. "
-    "If the change names a character, person, place or thing whose look you are not sure of, "
-    "reply only SEARCH: <short English web search query about its appearance>."
+    "If the change names a specific character, person, place, product or artwork (a proper "
+    "name, even one you think you know), reply only SEARCH: <name, its series, appearance>."
     "\n\n[Change]\n{request}"
 )
 # Added after a SEARCH: reply, so Gemma describes the look for ComfyUI, which has no internet.
@@ -155,6 +155,7 @@ class ImageMaker:
             prompt = await self.brain.image_prompt(instruction, image)
             if prompt and prompt.startswith("SEARCH:"):  # one lookup per picture, results never stored
                 results = await web_search(prompt[len("SEARCH:"):].strip())
+                log.info("Looked up a named subject on the web (%d characters found)", len(results))
                 prompt = await self.brain.image_prompt(instruction + LOOKUP.format(results=results or "(no results)"),
                                                        image)
             if prompt is None:
