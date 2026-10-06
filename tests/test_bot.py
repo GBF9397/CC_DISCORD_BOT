@@ -28,6 +28,7 @@ class FakeMessage:
     def __init__(self, content, channel, author_id=1, bot=False, mentions=(), attachments=(), guild=None):
         self.content = content
         self.guild = guild
+        self.stickers = []
         self.attachments = list(attachments)
         self.channel = channel
         self.author = SimpleNamespace(id=author_id, bot=bot, display_name=f"user{author_id}")
@@ -209,7 +210,7 @@ async def test_uses_server_emoji_and_sometimes_a_sticker(mock_api, monkeypatch):
     msg = FakeMessage("hi", ch, guild=guild)
     await bot.on_message(msg)
     system = mock_api.requests[0]["messages"][0]["content"]
-    assert "pepe (smug laugh)" in system and "gone" not in system and "catjam (dancing cat, cat)" in system
+    assert "pepe (smug laugh)" in system and "gone" not in system and "catjam (dancing cat; cat)" in system
     assert msg.replies == ["lol <a:pepe:42> :gone:"]
     assert ch.sent == [[guild.stickers[0]]]
     assert "[sticker" not in bot.memory.get(BOT_CHANNEL)[-1]["content"]
@@ -239,3 +240,23 @@ async def test_learns_emoji_meanings_from_pictures_once(mock_api):
     assert fetched == ["https://cdn.discordapp.com/emojis/7.png", "https://x/8.png"]
     assert bot.meanings == {7: "happy dancing cat", 8: "happy dancing cat"}
     assert mock_api.requests[0]["messages"][0]["content"][1]["image_url"]["url"] == "data:image/png;base64,UE5H"
+
+
+async def test_learns_from_how_members_use_emoji(mock_api, monkeypatch):
+    import bot as bot_module
+    monkeypatch.setattr(bot_module.random, "random", lambda: 0.0)
+    guild = SimpleNamespace(emojis=[FakeEmoji(id=1, name="kekw", available=True)],
+                            stickers=[SimpleNamespace(id=3, name="catjam", available=True, description="", emoji="")])
+    bot = make_bot(mock_api.base_url)
+    elsewhere = FakeChannel(CHANNEL)  # bot doesn't answer here, but still learns
+    await bot.on_message(FakeMessage("lol you lost again <:kekw:1>", elsewhere, guild=guild))
+    await bot.on_message(FakeMessage("<:kekw:1>", elsewhere, guild=guild))  # emoji alone: nothing to learn
+    sticky = FakeMessage("party time " + "x" * 100, elsewhere, guild=guild)
+    sticky.stickers = [SimpleNamespace(id=3)]
+    await bot.on_message(sticky)
+    assert mock_api.requests == []
+
+    await bot.on_message(FakeMessage("hi", FakeChannel(BOT_CHANNEL), guild=guild))
+    system = mock_api.requests[0]["messages"][0]["content"]
+    assert 'kekw (used like "lol you lost again :kekw:")' in system
+    assert 'catjam (used like "party time ' in system and '..."' in system

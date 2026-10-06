@@ -2,7 +2,9 @@
 import logging
 import os
 import random
+import re
 import sys
+from collections import defaultdict, deque
 
 import discord
 from discord import app_commands
@@ -17,6 +19,8 @@ log = logging.getLogger("bot")
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 STICKER_CHANCE = 0.2  # share of chat replies where the model is offered stickers
 CDN = "https://cdn.discordapp.com"
+CUSTOM_EMOJI = re.compile(r"<a?:(\w+):(\d+)>")
+EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 
 
 def lower_priority():
@@ -44,6 +48,7 @@ class ChatBot(discord.Client):
         self.brain = Brain(config["base_url"], config["model"], self.memory)
         self.tree = app_commands.CommandTree(self)
         self.meanings = {}  # emoji/sticker id -> what Gemma thinks it means, RAM only
+        self.examples = defaultdict(lambda: deque(maxlen=EXAMPLES_KEPT))  # id -> recent member uses, RAM only
         self._add_slash_commands()
 
     def allowed(self, user):
@@ -62,21 +67,32 @@ class ChatBot(discord.Client):
             for e in guild.emojis:
                 if e.available:
                     emojis[e.name] = str(e)
-                    labels.append(self.label(e.name, self.meanings.get(e.id)))
+                    labels.append(self.label(e.id, e.name, self.meanings.get(e.id)))
             if stickers and random.random() < STICKER_CHANCE:
                 for s in guild.stickers:
                     if s.available:
                         sticker_map[s.name] = s
                         sticker_labels.append(self.label(
-                            s.name, self.meanings.get(s.id) or s.description, s.emoji))
+                            s.id, s.name, self.meanings.get(s.id) or s.description, s.emoji))
         reply = await self.brain.ask(channel_id, user_name, text, images, results,
                                      extras_note(labels, sticker_labels))
         return apply_extras(reply, emojis, sticker_map)
 
-    @staticmethod
-    def label(name, *hints):
+    def label(self, item_id, name, *hints):
         hints = [h for h in hints if h]
-        return f"{name} ({', '.join(hints)})" if hints else name
+        hints += [f'used like "{ex}"' for ex in self.examples.get(item_id, ())]
+        return f"{name} ({'; '.join(hints)})" if hints else name
+
+    def note_usage(self, message):
+        """Remember a short line showing how a member used a custom emoji or sticker."""
+        used = [int(i) for _, i in CUSTOM_EMOJI.findall(message.content)]
+        used += [s.id for s in message.stickers]
+        line = CUSTOM_EMOJI.sub(r":\1:", message.content).strip()
+        if not used or not CUSTOM_EMOJI.sub("", message.content).strip():
+            return  # nothing but the emoji itself: no context to learn from
+        line = line[:EXAMPLE_CHARS] + ("..." if len(line) > EXAMPLE_CHARS else "")
+        for item_id in set(used):
+            self.examples[item_id].append(line)
 
     async def learn_meanings(self, guild):
         """Show each new emoji/sticker picture to Gemma once so it knows what it means."""
@@ -172,7 +188,10 @@ class ChatBot(discord.Client):
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars, %d attachments)",
                  message.channel.id, message.author.id, len(message.content), len(message.attachments))
-        if message.author.bot or not self.allowed(message.author):
+        if message.author.bot:
+            return
+        self.note_usage(message)
+        if not self.allowed(message.author):
             return
         text = message.content.strip()
 
