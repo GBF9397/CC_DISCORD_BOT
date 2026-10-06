@@ -321,7 +321,7 @@ async def test_gemma_looks_up_a_named_character_before_writing_the_prompt(mock_a
         return "Frieren is an elf with long white hair in twin tails."
 
     monkeypatch.setattr(maker.brain, "image_prompt", fake_prompt)
-    async def fake_images(query):
+    async def fake_images(query, max_results=3):
         searched.append(query)
         return [(b"JPEG", "image/jpeg")]
 

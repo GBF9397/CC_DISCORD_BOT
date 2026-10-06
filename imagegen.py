@@ -45,11 +45,12 @@ REFINER = (
 )
 # Added after a SEARCH: reply, so Gemma describes the look for ComfyUI, which has no internet.
 LOOKUP = ("\n\nNow write the prompt (do not reply SEARCH again). Draw only the subject the request "
-          "names, never a game screen, menu, logo or character list. Pictures of it found on the web "
-          "are attached after any earlier picture; look closely at the ones that show it and ignore any that "
-          "don't. For a character start with 1girl or 1boy, solo, its name and series, then describe exactly "
-          "what those pictures show: hair color and style, streaks, eye color, each piece of clothing with "
-          "its colors, accessories and weapon. Use the web text below to check the details.\n\n"
+          "names, never a game screen, menu, logo or character list. First read the web text below to "
+          "learn how it looks. Pictures found on the web are attached after any earlier picture; some may "
+          "show other characters from the same series, so use only the pictures that match the web text "
+          "and each other, ignore the rest, and if none match go by the text. For a character start with "
+          "1girl or 1boy, solo, its name and series, then describe exactly how it looks: hair color and "
+          "style, streaks, eye color, each piece of clothing with its colors, accessories and weapon.\n\n"
           "[What the web says about it]\n{results}")
 NOTHING_TO_REFINE = "Nothing to refine yet in this channel. Draw one first with /draw or !draw."
 NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature"
@@ -162,7 +163,7 @@ class ImageMaker:
             if prompt and prompt.startswith("SEARCH:"):  # one lookup per picture, results never stored
                 name = prompt[len("SEARCH:"):].strip()
                 results = await web_search(name + " character appearance hair outfit")
-                found = await image_search(name + " official art")
+                found = await image_search(name + " official art", max_results=5)
                 log.info("Looked up a named subject on the web (%d characters, %d pictures)", len(results), len(found))
                 prompt = await self.brain.image_prompt(
                     instruction + LOOKUP.format(results=results or "(no results)"), images + found)
