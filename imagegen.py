@@ -30,7 +30,9 @@ PROMPT_WRITER = (
 # For /refine: change the channel's last prompt; the same seed keeps the overall look.
 REFINER = (
     "Here is a Stable Diffusion prompt: {prompt}\n\nChange it as asked below and keep "
-    "everything else the same. Reply with only the new prompt, comma-separated English "
+    "everything else the same. If the picture drawn from it is attached, first make the "
+    "prompt describe exactly what it shows (subject, colors, fur or hair, clothes, pose, "
+    "background) so those stay the same. Reply with only the new prompt, comma-separated English "
     "tags, under 60 words. If the change makes it sexual and involving anyone who is or "
     "looks under 18, or a sexual or degrading picture of a real person, reply only REFUSED."
     "\n\n[Change]\n{request}"
@@ -70,6 +72,7 @@ class ImageMaker:
         self.waiting = set()  # members with a picture queued or being drawn
         self.last = {}  # channel_id -> (prompt, seed, checkpoint) of its last picture, RAM only
         self.styles = {}  # channel_id -> style name, RAM only
+        self.pictures = {}  # channel_id -> PNG of its last picture, shown to Gemma on refine, RAM only
 
     def style(self, channel_id):
         return self.styles.get(channel_id, next(iter(self.checkpoints)))
@@ -138,14 +141,15 @@ class ImageMaker:
                 instruction = REFINER.format(prompt=old, request=request)
             else:
                 seed, instruction = random.randrange(2**32), PROMPT_WRITER.format(request=request)
-            prompt = await self.brain.image_prompt(instruction)
+            # Gemma sees the last picture, so a refine keeps details the prompt never named.
+            prompt = await self.brain.image_prompt(instruction, self.pictures.get(channel_id) if refine else None)
             if prompt is None:
                 await self._deliver(deliver, user_id, None, "Sorry, my brain (LM Studio) is offline right now.")
             elif prompt.startswith("REFUSED") or blocked(prompt):
                 await self._deliver(deliver, user_id, None, "Sorry, I won't draw that.")
             else:
                 self.last[channel_id] = (prompt, seed, checkpoint)  # a queued /refine builds on it
-                jobs.append((prompt, seed, checkpoint, user_id, deliver))
+                jobs.append((prompt, seed, checkpoint, channel_id, user_id, deliver))
         return jobs
 
     async def _draw_all(self, jobs):
@@ -153,12 +157,13 @@ class ImageMaker:
         log.info("Drawing %d picture(s); unloading %s from the GPU", len(jobs), self.brain.model)
         await self._lms("unload", self.brain.model)
         try:
-            for prompt, seed, checkpoint, user_id, deliver in jobs:
+            for prompt, seed, checkpoint, channel_id, user_id, deliver in jobs:
                 try:
                     png = await self._comfy(prompt, seed, checkpoint)
                 except DrawError as e:
                     await self._deliver(deliver, user_id, None, str(e))
                 else:
+                    self.pictures[channel_id] = png
                     await self._deliver(deliver, user_id, png, None)
         finally:
             await self._free_comfy()

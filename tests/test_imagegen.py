@@ -227,7 +227,8 @@ async def test_refine_changes_the_last_prompt_and_keeps_the_seed(mock_api, comfy
     assert second["5"]["inputs"]["seed"] == first["5"]["inputs"]["seed"]
     assert second["2"]["inputs"]["text"] == "a cat, watercolor, night sky"
     asked = mock_api.requests[-1]["messages"][0]["content"]
-    assert "a cat, watercolor" in asked and "make it night" in asked
+    assert "a cat, watercolor" in asked[0]["text"] and "make it night" in asked[0]["text"]
+    assert asked[1]["image_url"]["url"].startswith("data:image/png;base64,")  # Gemma sees the last picture
     other = FakeMessage("!refine make it night", FakeChannel(BOT_CHANNEL_2))
     await bot.on_message(other)
     assert other.replies == [NOTHING_TO_REFINE]

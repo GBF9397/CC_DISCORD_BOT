@@ -195,12 +195,18 @@ class Brain:
                 return ""
         return " ".join((resp.choices[0].message.content or "").split())[:60]
 
-    async def image_prompt(self, instruction):
-        """One-off call for imagegen; the caller already holds self._lock. None if offline."""
+    async def image_prompt(self, instruction, image=None):
+        """One-off call for imagegen; the caller already holds self._lock. None if offline.
+        image: optional PNG bytes shown with the instruction, never stored."""
+        content = instruction
+        if image:
+            content = [{"type": "text", "text": instruction},
+                       {"type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{base64.b64encode(image).decode()}"}}]
         try:
             resp = await self.client.chat.completions.create(
                 model=self.model, temperature=0.7,
-                messages=[{"role": "user", "content": instruction}],
+                messages=[{"role": "user", "content": content}],
             )
         except (APIConnectionError, APITimeoutError, APIStatusError):
             return None
