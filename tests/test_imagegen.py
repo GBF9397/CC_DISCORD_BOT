@@ -5,7 +5,7 @@ import pytest_asyncio
 from aiohttp import web
 
 from imagegen import DrawError, ImageMaker, blocked
-from tests.test_bot import BOT_CHANNEL, FakeChannel, FakeMessage, make_bot
+from tests.test_bot import BOT_CHANNEL, BOT_CHANNEL_2, FakeChannel, FakeMessage, make_bot
 
 PNG = b"\x89PNG fake"
 
@@ -75,7 +75,7 @@ def image_bot(api_url, comfy_url):
 async def test_draw_takes_turns_on_the_gpu(mock_api, comfy, events):
     mock_api.reply = "a cat, watercolor"
     maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, "model.safetensors")
-    assert await maker.draw("画一只猫") == PNG
+    assert await maker.draw("画一只猫", BOT_CHANNEL) == PNG
     assert events == ["lms unload gemma4-12b-bionic-v2", "comfy draw", "comfy free",
                       "lms load gemma4-12b-bionic-v2 --context-length 16384"]
     job = comfy.jobs[0]
@@ -89,7 +89,7 @@ async def test_draw_takes_turns_on_the_gpu(mock_api, comfy, events):
 async def test_gemma_comes_back_when_comfyui_is_offline(mock_api, events):
     maker = ImageMaker(make_bot(mock_api.base_url).brain, "http://127.0.0.1:9", "m")
     try:
-        await maker.draw("a cat")
+        await maker.draw("a cat", BOT_CHANNEL)
         raise AssertionError("expected DrawError")
     except DrawError as e:
         assert "offline" in str(e)
@@ -102,7 +102,7 @@ async def test_refused_request_never_unloads_gemma(mock_api, comfy, events):
     mock_api.reply = "REFUSED"
     maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, "m")
     try:
-        await maker.draw("something bad")
+        await maker.draw("something bad", BOT_CHANNEL)
         raise AssertionError("expected DrawError")
     except DrawError:
         pass
@@ -143,3 +143,26 @@ async def test_draw_off_by_default(mock_api):
     await bot.on_message(msg)
     assert msg.replies == ["echo: user1: !draw a cat"]
     assert bot.tree.get_command("draw") is None
+
+
+async def test_refine_changes_the_last_prompt_and_keeps_the_seed(mock_api, comfy, events):
+    mock_api.reply = "a cat, watercolor"
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    early = FakeMessage("!refine make it night", ch)
+    await bot.on_message(early)
+    assert early.replies == ["Nothing to refine yet in this channel. Draw one first with /draw or !draw."]
+    assert events == []
+    await bot.on_message(FakeMessage("!draw a cat", ch))
+    mock_api.reply = "a cat, watercolor, night sky"
+    msg = FakeMessage("!refine make it night", ch)
+    await bot.on_message(msg)
+    assert msg.replies[1].filename == "image.png"
+    first, second = comfy.jobs
+    assert second["5"]["inputs"]["seed"] == first["5"]["inputs"]["seed"]
+    assert second["2"]["inputs"]["text"] == "a cat, watercolor, night sky"
+    asked = mock_api.requests[-1]["messages"][0]["content"]
+    assert "a cat, watercolor" in asked and "make it night" in asked
+    other = FakeMessage("!refine make it night", FakeChannel(BOT_CHANNEL_2))
+    await bot.on_message(other)
+    assert other.replies[0].startswith("Nothing to refine")

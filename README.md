@@ -9,6 +9,7 @@ Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. The model g
 - Attach images (PNG, JPEG, WebP) to a message the bot answers and it looks at them. Images are only held in RAM for that one request, never saved.
 - `/search question:<text>` or `!search <text>` - look it up on the web first, then answer.
 - `/draw request:<text>` or `!draw <text>` - draw a picture, when `IMAGE_GEN=on` (see below).
+- `/refine changes:<text>` or `!refine <text>` - change the last picture drawn in this channel.
 - `/reset` or `!reset` - forget this channel's conversation.
 - The bot uses the server's own custom emoji (animated ones too) in its replies now and then, and, if `STICKERS=on` is in `.env` (off by default), once in a while sends one of the server's stickers. On startup it shows each emoji (and sticker, when on) picture to Gemma once to learn what it means (kept in RAM only), and it remembers the last 2 short messages where members used each one (RAM only, gone on restart), so it can pick one that fits the mood.
 - `/persona` - change the bot's personality in this channel: pick a `preset` (buddy, tsundere, wuxia, pirate, roast) or write your own with `custom`, or play a known character with `character` (e.g. `Ganyu Genshin Impact`): the bot searches the web for them and turns what it finds into a personality. With no options it shows the current one. Switching clears the channel's memory. Personalities live in RAM, so a restart goes back to buddy.
@@ -19,6 +20,8 @@ The bot remembers the last 30 messages per channel (in RAM, trimmed to ~9000 tok
 
 ## Drawing pictures (optional)
 Set `IMAGE_GEN=on` in `.env` and restart, and members can use `/draw request:<text>` or `!draw <text>`. The graphics card takes turns: Gemma turns the request into a Stable Diffusion prompt, then is unloaded from LM Studio (`lms unload`); ComfyUI draws the picture, then frees its model; Gemma is loaded back (`lms load` with `LMSTUDIO_CONTEXT`) and the bot posts the picture. While drawing, the bot answers nobody at all, apart from one "Drawing..." notice. If anything fails, Gemma is still reloaded and the bot says what went wrong. One picture at a time.
+
+`/refine` (or `!refine`) changes the channel's last picture: Gemma edits its prompt with the requested changes and ComfyUI draws again with the same seed, so the overall look stays close while the details change. Only that prompt and seed are kept, in RAM per channel; a restart forgets them.
 
 Setup: install ComfyUI and keep it running (it uses almost no graphics memory while idle), put one model in its `models/checkpoints` folder, and put that file name in `SD_CHECKPOINT`. Use `IMAGE_SIZE=1024` for SDXL models, `512` for SD 1.5. The `lms` command must work in the bot's terminal. The bot keeps the picture in RAM only; ComfyUI holds it in its own temp folder, which it empties every time it starts. Hard limits: no sexual pictures involving anyone who is or looks under 18, and no sexual or degrading pictures of real people.
 

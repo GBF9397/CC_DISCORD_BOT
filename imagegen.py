@@ -21,6 +21,15 @@ PROMPT_WRITER = (
     "under 18, or is a sexual or degrading picture of a real person, reply only REFUSED.\n\n"
     "[Request]\n{request}"
 )
+# For /refine: change the channel's last prompt; the same seed keeps the overall look.
+REFINER = (
+    "Here is a Stable Diffusion prompt: {prompt}\n\nChange it as asked below and keep "
+    "everything else the same. Reply with only the new prompt, comma-separated English "
+    "tags, under 60 words. If the change makes it sexual and involving anyone who is or "
+    "looks under 18, or a sexual or degrading picture of a real person, reply only REFUSED."
+    "\n\n[Change]\n{request}"
+)
+NOTHING_TO_REFINE = "Nothing to refine yet in this channel. Draw one first with /draw or !draw."
 NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature"
 
 # Second line of defence in case the prompt writer lets one through.
@@ -49,16 +58,25 @@ class ImageMaker:
         self.context_length = context_length
         self.timeout = timeout
         self.drawing = False  # while True the bot stays silent
+        self.last = {}  # channel_id -> (prompt, seed) of its last picture, RAM only
 
-    async def draw(self, request, notice=None):
+    async def draw(self, request, channel_id, notice=None, refine=False):
         """Returns PNG bytes. Raises DrawError. Gemma is always back online afterwards.
-        notice: optional coroutine function run first, e.g. telling the channel."""
+        notice: optional coroutine function run first, e.g. telling the channel.
+        refine: change the channel's last picture instead of starting a new one."""
+        if refine and channel_id not in self.last:
+            raise DrawError(NOTHING_TO_REFINE)
         self.drawing = True  # set before any await so a second request can't slip in
         try:
             if notice:
                 await notice()
             async with self.brain._lock:  # wait for replies in progress, block new ones
-                prompt = await self.brain.image_prompt(PROMPT_WRITER.format(request=request))
+                if refine:
+                    old, seed = self.last[channel_id]
+                    instruction = REFINER.format(prompt=old, request=request)
+                else:
+                    seed, instruction = random.randrange(2**32), PROMPT_WRITER.format(request=request)
+                prompt = await self.brain.image_prompt(instruction)
                 if prompt is None:
                     raise DrawError("Sorry, my brain (LM Studio) is offline right now.")
                 if prompt.startswith("REFUSED") or blocked(prompt):
@@ -66,7 +84,9 @@ class ImageMaker:
                 log.info("Drawing; unloading %s from the GPU", self.brain.model)
                 await self._lms("unload", self.brain.model)
                 try:
-                    return await self._comfy(prompt)
+                    png = await self._comfy(prompt, seed)
+                    self.last[channel_id] = (prompt, seed)
+                    return png
                 finally:
                     await self._free_comfy()
                     log.info("Loading %s back onto the GPU", self.brain.model)
@@ -94,7 +114,7 @@ class ImageMaker:
             log.error("lms %s failed: %s", args[0], out.decode(errors="replace").strip()[-300:])
         return proc.returncode == 0
 
-    def _workflow(self, prompt):
+    def _workflow(self, prompt, seed):
         return {
             "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": self.checkpoint}},
             "2": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["1", 1]}},
@@ -102,7 +122,7 @@ class ImageMaker:
             "4": {"class_type": "EmptyLatentImage",
                   "inputs": {"width": self.size, "height": self.size, "batch_size": 1}},
             "5": {"class_type": "KSampler", "inputs": {
-                "seed": random.randrange(2**32), "steps": 25, "cfg": 6.0,
+                "seed": seed, "steps": 25, "cfg": 6.0,
                 "sampler_name": "euler_ancestral", "scheduler": "normal", "denoise": 1.0,
                 "model": ["1", 0], "positive": ["2", 0], "negative": ["3", 0],
                 "latent_image": ["4", 0]}},
@@ -111,11 +131,11 @@ class ImageMaker:
             "7": {"class_type": "PreviewImage", "inputs": {"images": ["6", 0]}},
         }
 
-    async def _comfy(self, prompt):
+    async def _comfy(self, prompt, seed):
         try:
             async with aiohttp.ClientSession() as http:
                 async with http.post(f"{self.comfy_url}/prompt",
-                                     json={"prompt": self._workflow(prompt)}) as r:
+                                     json={"prompt": self._workflow(prompt, seed)}) as r:
                     body = await r.json(content_type=None)
                     if r.status != 200 or "prompt_id" not in body:
                         log.error("ComfyUI rejected the job: %s", str(body)[:500])

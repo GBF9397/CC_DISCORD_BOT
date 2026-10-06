@@ -67,11 +67,11 @@ class ChatBot(discord.Client):
         """While an image is being drawn Gemma is offline and the bot answers nobody."""
         return self.images is not None and self.images.drawing
 
-    async def draw(self, request, notice):
+    async def draw(self, request, channel_id, notice, refine=False):
         """Returns (discord.File or None, error text or None). The picture stays in RAM."""
         log.info("Drawing an image")
         try:
-            png = await self.images.draw(request, notice)
+            png = await self.images.draw(request, channel_id, notice, refine)
         except DrawError as e:
             return None, str(e)
         return discord.File(io.BytesIO(png), "image.png"), None
@@ -221,18 +221,29 @@ class ChatBot(discord.Client):
         if self.images is None:
             return
 
-        @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until it's done)")
-        async def draw(interaction: discord.Interaction, request: str):
+        async def draw_command(interaction, request, refine):
             if self.drawing():
                 return
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
-            file, error = await self.draw(request, lambda: interaction.response.defer(thinking=True))
+            file, error = await self.draw(request, interaction.channel_id,
+                                          lambda: interaction.response.defer(thinking=True), refine)
             if file:
                 await interaction.followup.send(f"{interaction.user.display_name}: {request[:200]}", file=file)
-            else:
+            elif interaction.response.is_done():
                 await interaction.followup.send(error)
+            else:
+                await interaction.response.send_message(error, ephemeral=True)
+
+        @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until it's done)")
+        async def draw(interaction: discord.Interaction, request: str):
+            await draw_command(interaction, request, refine=False)
+
+        @self.tree.command(name="refine", description="Change the last picture drawn in this channel")
+        @app_commands.describe(changes="What to change, e.g. 'make it night time'")
+        async def refine(interaction: discord.Interaction, changes: str):
+            await draw_command(interaction, changes, refine=True)
 
     async def setup_hook(self):
         await self.tree.sync()
@@ -272,9 +283,11 @@ class ChatBot(discord.Client):
         for tag in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
             text = text.replace(tag, "")
         text = text.strip()
-        if self.images and text.lower().startswith("!draw "):
-            file, error = await self.draw(text[len("!draw "):].strip(),
-                                          lambda: message.reply(DRAWING_NOTICE, mention_author=False))
+        command = text.split(" ", 1)[0].lower()
+        if self.images and command in ("!draw", "!refine") and text[len(command):].strip():
+            file, error = await self.draw(text[len(command):].strip(), message.channel.id,
+                                          lambda: message.reply(DRAWING_NOTICE, mention_author=False),
+                                          refine=command == "!refine")
             if file:
                 await message.reply(file=file, mention_author=False)
             else:
