@@ -20,6 +20,8 @@ class MockLMStudio:
         await asyncio.sleep(self.delay)
         self.active -= 1
         last = body["messages"][-1]["content"]
+        if isinstance(last, list):  # text + image parts
+            last = last[0]["text"]
         content = self.reply if self.reply is not None else f"echo: {last}"
         return web.json_response({
             "id": "chatcmpl-mock", "object": "chat.completion", "created": 0,

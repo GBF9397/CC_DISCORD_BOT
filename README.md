@@ -6,6 +6,7 @@ Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. Chat only: 
 - `/ask question:<text>` - any member can ask (slash command).
 - `@Bot <text>` - mention the bot in any channel.
 - Any message in the channels listed in `BOT_CHANNEL_ID` (comma-separated).
+- Attach images (PNG, JPEG, WebP) to a message the bot answers and it looks at them. Images are only held in RAM for that one request, never saved.
 - `/reset` or `!reset` - forget this channel's conversation.
 
 The bot remembers the last 10 messages per channel (in RAM, trimmed to ~3000 tokens), answers one request at a time in order, shows "typing...", splits replies over 2000 characters, and says so politely if LM Studio is offline.

@@ -11,6 +11,8 @@ from core import Brain, ChannelMemory, load_config, split_message
 
 log = logging.getLogger("bot")
 
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
+
 
 def lower_priority():
     """Run below normal priority so the bot never competes with games or LM Studio."""
@@ -75,8 +77,8 @@ class ChatBot(discord.Client):
                 log.info("Answering every message in #%s", self.get_channel(channel_id))
 
     async def on_message(self, message):
-        log.info("Message in channel %s from user %s (%d chars)",
-                 message.channel.id, message.author.id, len(message.content))
+        log.info("Message in channel %s from user %s (%d chars, %d attachments)",
+                 message.channel.id, message.author.id, len(message.content), len(message.attachments))
         if message.author.bot or not self.allowed(message.author):
             return
         text = message.content.strip()
@@ -94,11 +96,15 @@ class ChatBot(discord.Client):
         for tag in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
             text = text.replace(tag, "")
         text = text.strip()
-        if not text:
+        image_files = [a for a in message.attachments
+                       if (a.content_type or "").split(";")[0] in IMAGE_TYPES]
+        if not (text or image_files):
             return
 
         async with message.channel.typing():
-            reply = await self.brain.ask(message.channel.id, message.author.display_name, text)
+            # Image bytes stay in RAM for this one request only.
+            images = [(await a.read(), a.content_type.split(";")[0]) for a in image_files]
+            reply = await self.brain.ask(message.channel.id, message.author.display_name, text, images)
         chunks = split_message(reply)
         await message.reply(chunks[0], mention_author=False)
         for chunk in chunks[1:]:

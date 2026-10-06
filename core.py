@@ -1,5 +1,6 @@
 """Model access, per-channel memory and reply splitting. No Discord code here."""
 import asyncio
+import base64
 import os
 from collections import defaultdict, deque
 
@@ -58,8 +59,16 @@ class Brain:
         self.top_p = top_p
         self._lock = asyncio.Lock()  # asyncio locks wake waiters in FIFO order
 
-    async def ask(self, channel_id, user_name, text):
-        user_msg = f"{user_name}: {text}"
+    async def ask(self, channel_id, user_name, text, images=()):
+        """images: (bytes, mime type) pairs, sent to the model and never stored."""
+        user_msg = remembered = f"{user_name}: {text}"
+        if images:
+            remembered += f" [sent {len(images)} image(s)]"
+            user_msg = [{"type": "text", "text": user_msg}] + [
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
+                for data, mime in images
+            ]
         async with self._lock:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             messages += self.memory.get(channel_id)
@@ -77,7 +86,7 @@ class Brain:
                 return ERROR_MESSAGE
             # Gemma 4 puts its reasoning in reasoning_content; only content is posted.
             reply = (resp.choices[0].message.content or "").strip() or "..."
-            self.memory.add(channel_id, "user", user_msg)
+            self.memory.add(channel_id, "user", remembered)
             self.memory.add(channel_id, "assistant", reply)
             return reply
 
