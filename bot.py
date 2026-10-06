@@ -23,6 +23,10 @@ STICKER_CHANCE = 0.2  # share of chat replies where the model is offered sticker
 CDN = "https://cdn.discordapp.com"
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):(\d+)>")
 DRAWING_NOTICE = "🎨 Drawing... I'm offline until it's done. 画画中，画完才回来。"
+# Added to the system prompt when drawing is on, so Gemma stops saying it can't make pictures.
+DRAW_HINT = ("\n\nThis bot can draw pictures, but not in a normal reply: if someone asks you to draw "
+             "or make a picture, tell them to send !draw followed by what they want (add realistic "
+             "first for a photo look), or use /draw.")
 QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again once every picture is done. "
                  "已排队，前面还有 {ahead} 张，全部画完我才回来聊天。")
 ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
@@ -128,7 +132,7 @@ class ChatBot(discord.Client):
                         sticker_labels.append(self.label(
                             s.id, s.name, hand.get(s.name) or self.meanings.get(s.id) or s.description, s.emoji))
         reply = await self.brain.ask(channel_id, user_name, text, images, results,
-                                     extras_note(labels, sticker_labels))
+                                     extras_note(labels, sticker_labels) + (DRAW_HINT if self.images else ""))
         return apply_extras(reply, emojis, sticker_map)
 
     def label(self, item_id, name, *hints):

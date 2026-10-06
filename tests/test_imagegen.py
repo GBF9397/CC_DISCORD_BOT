@@ -293,3 +293,12 @@ async def test_each_request_keeps_its_own_style_in_order(mock_api, comfy, events
     asked = [r["messages"][0]["content"] for r in mock_api.requests]
     assert ["小猫" in a for a in asked] == [True, False, False, False, False]
     assert "realistic" not in asked[1] and "中世纪城堡" in asked[1]
+
+
+async def test_gemma_is_told_how_members_can_draw(mock_api, comfy):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    await bot.on_message(FakeMessage("你可以生成图吗", FakeChannel(BOT_CHANNEL)))
+    assert "!draw" in mock_api.requests[-1]["messages"][0]["content"]
+    plain = make_bot(mock_api.base_url)
+    await plain.on_message(FakeMessage("你可以生成图吗", FakeChannel(BOT_CHANNEL)))
+    assert "!draw" not in mock_api.requests[-1]["messages"][0]["content"]
