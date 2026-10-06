@@ -49,8 +49,11 @@ LOOKUP = ("\n\nNow write the prompt (do not reply SEARCH again). Draw only the s
           "learn how it looks. Pictures found on the web are attached after any earlier picture; some may "
           "show other characters from the same series, so use only the pictures that match the web text "
           "and each other, ignore the rest, and if none match go by the text. For a character start with "
-          "1girl or 1boy, solo, its name and series, then describe exactly how it looks: hair color and "
-          "style, streaks, eye color, each piece of clothing with its colors, accessories and weapon.\n\n"
+          "1girl or 1boy, solo, then describe exactly how it looks: hair color and style, streaks, eye "
+          "color, each piece of clothing with its colors, accessories and weapon. The drawing model only "
+          "knows characters that came out before 2025: add the character's name and series as tags only "
+          "if the web text shows it came out before 2025. Otherwise leave out its name and series "
+          "entirely, or the drawing model swaps in another character it knows from that series.\n\n"
           "[What the web says about it]\n{results}")
 NOTHING_TO_REFINE = "Nothing to refine yet in this channel. Draw one first with /draw or !draw."
 NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature"
