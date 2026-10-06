@@ -109,7 +109,7 @@ def estimate_tokens(text):
 class ChannelMemory:
     """Last N messages per channel, kept in RAM and trimmed to a token budget."""
 
-    def __init__(self, max_messages=10, max_tokens=3000):
+    def __init__(self, max_messages=30, max_tokens=9000):
         self.max_tokens = max_tokens
         self._history = defaultdict(lambda: deque(maxlen=max_messages))
 

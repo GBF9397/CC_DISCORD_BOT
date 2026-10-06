@@ -41,6 +41,14 @@ def test_memory_keeps_last_ten_and_trims_by_tokens():
     assert mem.get(1) == []
 
 
+def test_memory_defaults_to_thirty_messages():
+    mem = ChannelMemory()
+    for i in range(35):
+        mem.add(1, "user", f"a typical chat message number {i}")
+    kept = mem.get(1)
+    assert len(kept) == 30 and kept[0]["content"].endswith("number 5")
+
+
 async def test_requests_run_one_at_a_time(mock_api):
     mock_api.delay = 0.1
     brain = make_brain(mock_api.base_url)
