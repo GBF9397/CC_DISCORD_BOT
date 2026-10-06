@@ -100,7 +100,10 @@ def test_apply_extras_converts_emoji_and_pulls_sticker():
     emojis, stickers = {"pepe": "<:pepe:1>"}, {"catjam": "STICKER"}
     assert apply_extras("hi :pepe: at 12:30:00 <:pepe:1> :nope:", emojis, {}) == \
         ("hi <:pepe:1> at 12:30:00 <:pepe:1> :nope:", None)
-    assert apply_extras("我不是NPC。：pepe：<a:pepe:1>", emojis, {}) == ("我不是NPC。<:pepe:1><a:pepe:1>", None)
+    assert apply_extras("我不是NPC。pepe", emojis, {}) == ("我不是NPC。 <:pepe:1>", None)
+    assert apply_extras("pepe is a frog", emojis, {}) == ("pepe is a frog", None)
+    assert apply_extras("我是pepe", emojis, {}) == ("我是pepe", None)
+    assert apply_extras("好的:pepe:<a:x:2>", emojis, {}) == ("好的 <:pepe:1> <a:x:2>", None)
     assert apply_extras("ok [Sticker: catjam]", emojis, stickers) == ("ok", "STICKER")
     assert apply_extras("[sticker: catjam]", emojis, stickers) == ("", "STICKER")
     assert apply_extras("[sticker: unknown]", emojis, stickers) == ("...", None)
@@ -152,4 +155,3 @@ def test_shorten_counts_chinese_characters_and_english_words():
     assert shorten("一二三四五六七八九十十一", 10) == "一二三四五六七八九十…"
     assert shorten("one two three. four five six seven eight nine ten eleven", 10) == "one two three. four five six seven eight nine ten…"
     assert shorten("好的 :catcry: 我知道了，然后还有很多很多话要说", 5) == "好的 :catcry: 我知…"
-    assert shorten("一二三：wat：四五", 4) == "一二三：wat：…"

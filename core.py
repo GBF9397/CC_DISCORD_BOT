@@ -70,15 +70,17 @@ CHARACTER_PROMPT = (
 # The server's own custom emoji (incl. animated GIF ones) and stickers, offered to the model.
 EXTRAS_NOTE = (
     "\n\nThis server has custom emoji you may drop into a reply now and then by writing "
-    "them as :name:, picking one whose meaning fits your mood. Available: {emoji}."
+    "them as :name: with English colons on both sides and a space before it, picking one "
+    "whose meaning fits your mood. Available: {emoji}."
 )
 STICKER_NOTE = (
     "\n\nThis time you may also send ONE of the server's stickers if it really fits the "
     "mood: put [sticker: name] at the very end of your reply. Usually don't. Available: {stickers}."
 )
 STICKER_TAG = re.compile(r"\s*\[sticker:\s*([^\]]+)\]", re.IGNORECASE)
-# Colons may be full-width (：name：) when the model writes Chinese; "<:" and "<a:" are real emoji already.
-EMOJI_TAG = re.compile(r"(?<!<)(?<!<a)[:：]([\w~-]{2,32})[:：]")
+EMOJI_TAG = re.compile(r"(?<![<A-Za-z0-9_]):([\w~-]{2,32}):")  # may follow Chinese text
+# The model sometimes ends a reply with an emoji name but no colons, e.g. "...NPC。wat".
+TRAILING_NAME = re.compile(r"(?<![\w:])([\w~-]{2,32})$")
 MAX_EXTRAS = 50  # names listed per kind, to keep the prompt small
 
 
@@ -103,6 +105,8 @@ def apply_extras(reply, emojis, stickers):
         sticker = stickers.get(match.group(1).strip().strip(":"))
     reply = STICKER_TAG.sub("", reply).strip()
     reply = EMOJI_TAG.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
+    reply = TRAILING_NAME.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
+    reply = re.sub(r"(?<=\S)(<a?:\w+:\d+>)", r" \1", reply)  # a space before each emoji
     return (reply if reply or sticker else "..."), sticker
 
 
@@ -113,9 +117,9 @@ LENGTH_NOTE = (
     "reply in English (an emoji counts as one). Say less rather than stopping mid-sentence, "
     "even if your earlier replies were longer."
 )
-# One length unit: an emoji tag, a CJK character or punctuation mark, or a run of other non-space text.
+# One length unit: a CJK character or punctuation mark, or a run of other non-space text.
 CJK = "\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef"
-LENGTH_UNIT = re.compile(f"{EMOJI_TAG.pattern}|[{CJK}]|[^\\s{CJK}]+")
+LENGTH_UNIT = re.compile(f"[{CJK}]|[^\\s{CJK}]+")
 SENTENCE_END = re.compile(r"[。！？!?…~～]+|\.(?=\s|$)")
 
 
