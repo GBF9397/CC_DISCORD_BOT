@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from dotenv import load_dotenv
 
-from core import Brain, ChannelMemory, load_config, split_message
+from core import CUSTOM_MAX_CHARS, PERSONAS, Brain, ChannelMemory, load_config, split_message
 from search import needs_search, web_search
 
 log = logging.getLogger("bot")
@@ -80,6 +80,28 @@ class ChatBot(discord.Client):
                 return
             self.memory.reset(interaction.channel_id)
             await interaction.response.send_message("Memory for this channel cleared.")
+
+        @self.tree.command(name="persona", description="Change the bot's personality in this channel")
+        @app_commands.describe(preset="Pick a ready-made personality",
+                               custom="Or describe your own, e.g. 'a grumpy cat who loves fish'")
+        @app_commands.choices(preset=[app_commands.Choice(name=k, value=k) for k in PERSONAS])
+        async def persona(interaction: discord.Interaction, preset: app_commands.Choice[str] = None,
+                          custom: str = None):
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            if custom:
+                text, name = custom.strip()[:CUSTOM_MAX_CHARS], "custom"
+            elif preset:
+                text, name = PERSONAS[preset.value], preset.value
+            else:
+                await interaction.response.send_message(
+                    "Current personality: " + self.brain.persona(interaction.channel_id)
+                    + "\nPresets: " + ", ".join(PERSONAS), ephemeral=True)
+                return
+            self.brain.set_persona(interaction.channel_id, text)
+            await interaction.response.send_message(
+                f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
 
     async def setup_hook(self):
         await self.tree.sync()

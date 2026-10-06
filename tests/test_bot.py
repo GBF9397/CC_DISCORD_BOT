@@ -107,7 +107,7 @@ async def test_long_reply_is_split(mock_api):
 async def test_slash_commands_registered_and_work(mock_api):
     bot = make_bot(mock_api.base_url)
     names = {c.name for c in bot.tree.get_commands()}
-    assert names == {"ask", "reset", "search"}
+    assert names == {"ask", "reset", "search", "persona"}
 
     sent = []
     async def followup_send(text):
@@ -164,3 +164,26 @@ async def test_non_image_attachment_alone_is_ignored(mock_api):
     msg = FakeMessage("", FakeChannel(BOT_CHANNEL), attachments=[FakeAttachment(b"x", "text/plain")])
     await bot.on_message(msg)
     assert msg.replies == [] and mock_api.requests == []
+
+async def test_persona_command_switches_and_shows(mock_api):
+    from discord import app_commands
+    from core import CUSTOM_MAX_CHARS, PERSONAS
+    bot = make_bot(mock_api.base_url)
+    said = []
+    async def send_message(text, ephemeral=False):
+        said.append((text, ephemeral))
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=5, display_name="member"), channel_id=CHANNEL,
+        response=SimpleNamespace(send_message=send_message))
+    cmd = bot.tree.get_command("persona").callback
+
+    await cmd(interaction, app_commands.Choice(name="wuxia", value="wuxia"), None)
+    assert bot.brain.persona(CHANNEL) == PERSONAS["wuxia"]
+    assert "member switched me to **wuxia**" in said[-1][0] and not said[-1][1]
+
+    await cmd(interaction, None, "a grumpy cat " + "x" * 500)
+    assert bot.brain.persona(CHANNEL).startswith("a grumpy cat")
+    assert len(bot.brain.persona(CHANNEL)) == CUSTOM_MAX_CHARS
+
+    await cmd(interaction, None, None)
+    assert said[-1][1] and "grumpy cat" in said[-1][0] and "pirate" in said[-1][0]

@@ -8,11 +8,15 @@ from datetime import date
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
 SYSTEM_PROMPT = (
-    "You are a friendly assistant in a Discord server. Keep answers short and "
-    "conversational unless asked for detail. Several people may talk to you; "
-    "each user message starts with their name. Always reply in the language "
-    "the user wrote in (English or Chinese). You have no tools: you cannot "
-    "read files, run commands or browse the web, so never claim to."
+    "You are a member of a Discord server chatting with friends, not a customer-service "
+    "assistant. Several people may talk to you; each user message starts with the "
+    "speaker's display name. Call people by their name now and then, remember who said "
+    "what, and react to them personally. Have opinions, be specific, joke around; avoid "
+    "bland, generic or overly polite answers and never lecture. Keep replies short and "
+    "chatty unless asked for detail. Always reply in the language the user wrote in "
+    "(English or Chinese). You have no tools: you cannot read files, run commands or "
+    "browse the web, so never claim to. Never start a reply with your own name.\n\n"
+    "Your personality: "
 )
 
 SEARCH_NOTE = (
@@ -21,6 +25,23 @@ SEARCH_NOTE = (
     "results for anything current and prefer them over what you remember; name the "
     "source site when it helps. If they don't answer it, say so.]\n\n{results}\n\n[Message]\n"
 )
+
+# Preset personalities members can switch between with /persona.
+PERSONAS = {
+    "buddy": "a witty, slightly chaotic best friend. You tease people playfully, hype them "
+             "up, use the odd emoji, and always have a hot take.",
+    "tsundere": "a tsundere anime girl. You act annoyed and say things like 'it's not like "
+                "I wanted to help you, baka!', but you secretly care and always help anyway.",
+    "wuxia": "an ancient wuxia martial-arts master (武侠宗师). You speak dramatically about "
+             "cultivation, sects and inner energy, call people 'young hero' (少侠), and turn "
+             "every everyday topic into a jianghu legend.",
+    "pirate": "a loud, cheerful pirate captain. Arr! You talk like a pirate, call people "
+              "matey, and relate everything to treasure, rum and the open sea.",
+    "roast": "a savage stand-up comedian who roasts whoever talks to you, then still answers. "
+             "Keep it friendly banter: never truly hurtful, hateful or about real sensitive traits.",
+}
+DEFAULT_PERSONA = "buddy"
+CUSTOM_MAX_CHARS = 300
 
 OFFLINE_MESSAGE = "Sorry, my brain (LM Studio) is offline right now. Try again in a bit."
 ERROR_MESSAGE = "Sorry, something went wrong while thinking. Try again in a bit."
@@ -59,13 +80,22 @@ class ChannelMemory:
 class Brain:
     """Talks to LM Studio one request at a time; waiting callers queue up in order."""
 
-    def __init__(self, base_url, model, memory, temperature=0.5, top_p=0.95):
+    def __init__(self, base_url, model, memory, temperature=0.9, top_p=0.95):
         self.client = AsyncOpenAI(base_url=base_url, api_key="lm-studio", timeout=120)
         self.model = model
         self.memory = memory
         self.temperature = temperature
         self.top_p = top_p
         self._lock = asyncio.Lock()  # asyncio locks wake waiters in FIFO order
+        self._personas = {}  # channel_id -> personality text, RAM only
+
+    def persona(self, channel_id):
+        return self._personas.get(channel_id, PERSONAS[DEFAULT_PERSONA])
+
+    def set_persona(self, channel_id, text):
+        """Switch this channel's personality and forget the chat, so the old voice doesn't linger."""
+        self._personas[channel_id] = text
+        self.memory.reset(channel_id)
 
     async def ask(self, channel_id, user_name, text, images=(), search_results=""):
         """images: (bytes, mime type) pairs, sent to the model and never stored.
@@ -81,7 +111,7 @@ class Brain:
                 for data, mime in images
             ]
         async with self._lock:
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id)}]
             messages += self.memory.get(channel_id)
             messages.append({"role": "user", "content": user_msg})
             try:
