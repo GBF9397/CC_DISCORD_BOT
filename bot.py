@@ -8,6 +8,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from core import Brain, ChannelMemory, load_config, split_message
+from search import needs_search, web_search
 
 log = logging.getLogger("bot")
 
@@ -44,6 +45,13 @@ class ChatBot(discord.Client):
         allowed = self.config["allowed_users"]
         return not allowed or user.id in allowed
 
+    async def answer(self, channel_id, user_name, text, images=(), search=False):
+        results = ""
+        if text and (search or needs_search(text)):
+            log.info("Searching the web for a message in channel %s", channel_id)
+            results = await web_search(text)
+        return await self.brain.ask(channel_id, user_name, text, images, results)
+
     def _add_slash_commands(self):
         @self.tree.command(name="ask", description="Ask the bot something")
         async def ask(interaction: discord.Interaction, question: str):
@@ -51,7 +59,17 @@ class ChatBot(discord.Client):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
             await interaction.response.defer(thinking=True)
-            reply = await self.brain.ask(interaction.channel_id, interaction.user.display_name, question)
+            reply = await self.answer(interaction.channel_id, interaction.user.display_name, question)
+            for chunk in split_message(reply):
+                await interaction.followup.send(chunk)
+
+        @self.tree.command(name="search", description="Look something up on the web, then answer")
+        async def search(interaction: discord.Interaction, question: str):
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            await interaction.response.defer(thinking=True)
+            reply = await self.answer(interaction.channel_id, interaction.user.display_name, question, search=True)
             for chunk in split_message(reply):
                 await interaction.followup.send(chunk)
 
@@ -96,6 +114,9 @@ class ChatBot(discord.Client):
         for tag in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
             text = text.replace(tag, "")
         text = text.strip()
+        search = text.lower().startswith("!search ")
+        if search:
+            text = text[len("!search "):].strip()
         image_files = [a for a in message.attachments
                        if (a.content_type or "").split(";")[0] in IMAGE_TYPES]
         if not (text or image_files):
@@ -104,7 +125,7 @@ class ChatBot(discord.Client):
         async with message.channel.typing():
             # Image bytes stay in RAM for this one request only.
             images = [(await a.read(), a.content_type.split(";")[0]) for a in image_files]
-            reply = await self.brain.ask(message.channel.id, message.author.display_name, text, images)
+            reply = await self.answer(message.channel.id, message.author.display_name, text, images, search)
         chunks = split_message(reply)
         await message.reply(chunks[0], mention_author=False)
         for chunk in chunks[1:]:
