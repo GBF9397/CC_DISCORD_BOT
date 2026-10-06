@@ -343,5 +343,6 @@ async def test_drawing_notice_shows_the_progress_in_percent(mock_api, comfy, eve
     notice = msg.sent
     await finish(bot)
     assert msg.replies[0] == DRAWING_NOTICE and msg.replies[1].filename == "image.png"
+    assert msg.mentioned  # the member is pinged when the picture is posted
     assert notice.edits == [f"{DRAWING_NOTICE}\n▓▓░░░░░░░░ 25%", f"{DRAWING_NOTICE}\n▓▓▓▓▓░░░░░ 50%",
                             f"{DRAWING_NOTICE}\n▓▓▓▓▓▓▓░░░ 75%", f"{DRAWING_NOTICE}\n▓▓▓▓▓▓▓▓▓▓ 100%"]

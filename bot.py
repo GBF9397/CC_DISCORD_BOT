@@ -23,6 +23,7 @@ STICKER_CHANCE = 0.2  # share of chat replies where the model is offered sticker
 CDN = "https://cdn.discordapp.com"
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):(\d+)>")
 DRAWING_NOTICE = "🎨 Drawing... I'm offline until it's done. 画画中，画完才回来。"
+DONE_NOTICE = "🎨 Done! 画好了！"
 # Added to the system prompt when drawing is on, so Gemma stops saying it can't make pictures.
 DRAW_HINT = ("\n\nThis bot can draw pictures, but not in a normal reply: if someone asks you to draw "
              "or make a picture, tell them to send !draw followed by what they want (add realistic "
@@ -344,10 +345,11 @@ class ChatBot(discord.Client):
             return
         if self.images and command in ("!draw", "!refine") and text[len(command):].strip():
             async def send(text=None, file=None):
+                # mention_author pings the member, since the picture can arrive minutes later.
                 if file:
-                    await message.reply(file=file, mention_author=False)
+                    await message.reply(DONE_NOTICE, file=file, mention_author=True)
                 else:
-                    await message.reply(text, mention_author=False)
+                    await message.reply(text, mention_author=True)
 
             notice_message = None
 

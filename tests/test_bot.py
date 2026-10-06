@@ -37,6 +37,7 @@ class FakeMessage:
 
     async def reply(self, text=None, mention_author=True, file=None):
         self.replies.append(text if file is None else file)
+        self.mentioned = mention_author
         self.sent = FakeSent()
         return self.sent
 
