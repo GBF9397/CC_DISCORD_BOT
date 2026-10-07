@@ -5,9 +5,9 @@ import pytest_asyncio
 from aiohttp import web
 
 import imagegen
-from bot import ALREADY_QUEUED, DRAWING_NOTICE, QUEUED_NOTICE
+from bot import ALREADY_QUEUED, DRAWING_NOTICE, NO_PICTURE, NOTHING_TO_RECALL, QUEUED_NOTICE, RECALLED
 from imagegen import NOTHING_TO_REFINE, ImageMaker, blocked
-from tests.test_bot import BOT_CHANNEL, BOT_CHANNEL_2, FakeChannel, FakeMessage, make_bot
+from tests.test_bot import BOT_CHANNEL, BOT_CHANNEL_2, FakeAttachment, FakeChannel, FakeMessage, make_bot
 
 PNG = b"\x89PNG fake"
 
@@ -18,6 +18,7 @@ class MockComfy:
     def __init__(self, events, delay=0.0):
         self.events, self.delay, self.jobs, self.sockets = events, delay, [], {}
         self.fail = False
+        self.has_edit_node = True
 
     async def ws(self, request):
         ws = web.WebSocketResponse()
@@ -52,6 +53,10 @@ class MockComfy:
     async def stats(self, request):
         return web.json_response({})
 
+    async def object_info(self, request):
+        node = request.match_info["node"]
+        return web.json_response({node: {}} if self.has_edit_node else {})
+
     async def free(self, request):
         self.events.append("comfy free")
         return web.json_response({})
@@ -62,6 +67,7 @@ class MockComfy:
         app.router.add_get("/system_stats", self.stats)
         app.router.add_post("/prompt", self.prompt)
         app.router.add_post("/free", self.free)
+        app.router.add_get("/object_info/{node}", self.object_info)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -251,7 +257,7 @@ async def test_style_switch_picks_the_checkpoint_per_channel(mock_api, comfy, ev
         if bot.drawing():
             await finish(bot)
     names = [job["1"]["inputs"]["ckpt_name"] for job in comfy.jobs]
-    assert names == ["photo.safetensors", "model.safetensors", "photo.safetensors"]  # refine keeps its model
+    assert names == ["photo.safetensors", "model.safetensors", "model.safetensors"]  # the channel switched since
 
 
 async def test_starts_comfyui_in_the_background_when_it_is_off(mock_api, comfy, events, monkeypatch):
@@ -295,7 +301,9 @@ async def test_each_request_keeps_its_own_style_in_order(mock_api, comfy, events
                      "model.safetensors", "photo.safetensors"]
     asked = [r["messages"][0]["content"] for r in mock_api.requests]
     assert ["小猫" in a for a in asked] == [True, False, False, False, False]
-    assert "realistic" not in asked[1] and "中世纪城堡" in asked[1]
+    request = asked[1].split("[Request]")[1]
+    assert "realistic" not in request and "中世纪城堡" in request
+    assert "photo model" in asked[1] and "photo model" not in asked[0]  # Gemma knows which model draws it
 
 
 async def test_gemma_is_told_how_members_can_draw(mock_api, comfy):
@@ -346,3 +354,143 @@ async def test_drawing_notice_shows_the_progress_in_percent(mock_api, comfy, eve
     assert msg.mentioned  # the member is pinged when the picture is posted
     assert notice.edits == [f"{DRAWING_NOTICE}\n▓▓░░░░░░░░ 25%", f"{DRAWING_NOTICE}\n▓▓▓▓▓░░░░░ 50%",
                             f"{DRAWING_NOTICE}\n▓▓▓▓▓▓▓░░░ 75%", f"{DRAWING_NOTICE}\n▓▓▓▓▓▓▓▓▓▓ 100%"]
+
+
+async def test_refine_keeps_its_model_unless_asked_or_the_channel_switched(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    for text in ("!draw realistic a car", "!refine add rain", "!refine anime add snow"):
+        await bot.on_message(FakeMessage(text, ch))
+        await finish(bot)
+    names = [job["1"]["inputs"]["ckpt_name"] for job in comfy.jobs]
+    assert names == ["photo.safetensors", "photo.safetensors", "model.safetensors"]
+
+
+async def test_refine_builds_on_each_members_own_picture(mock_api, comfy, events):
+    """Two members drawing in one channel: a refine never builds on the other member's picture."""
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    mock_api.reply = "a cat"
+    await bot.on_message(FakeMessage("!draw a cat", ch, author_id=1))
+    await finish(bot)
+    mock_api.reply = "a dog"
+    await bot.on_message(FakeMessage("!draw a dog", ch, author_id=2))
+    await finish(bot)
+    mock_api.reply = "a dog, night"
+    await bot.on_message(FakeMessage("!refine night", ch, author_id=2))
+    await finish(bot)
+    mock_api.reply = "a cat, hat"
+    await bot.on_message(FakeMessage("!refine add a hat", ch, author_id=1))
+    await finish(bot)
+    asked = mock_api.requests[-1]["messages"][0]["content"][0]["text"]
+    assert "prompt: a cat" in asked and "dog" not in asked
+    cat, dog, _, cat_hat = comfy.jobs
+    assert cat_hat["5"]["inputs"]["seed"] == cat["5"]["inputs"]["seed"]
+    early = FakeMessage("!refine night", ch, author_id=3)
+    await bot.on_message(early)
+    assert early.replies == [NOTHING_TO_REFINE]
+
+
+async def test_recall_goes_back_and_branches_without_losing_pictures(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    none = FakeMessage("!recall", ch)
+    await bot.on_message(none)
+    assert none.replies == [NOTHING_TO_RECALL]
+    for prompt, text in (("girl, short hair", "!draw a girl"), ("girl, medium hair", "!refine longer hair"),
+                         ("girl, very long hair", "!refine longer hair")):
+        mock_api.reply = prompt
+        await bot.on_message(FakeMessage(text, ch))
+        await finish(bot)
+    listed = FakeMessage("!recall", ch)
+    await bot.on_message(listed)
+    assert [f.filename for f in listed.files] == ["1.png", "2.png", "3.png"] and "3" in listed.replies[0]
+    back = FakeMessage("!recall 2", ch)
+    await bot.on_message(back)
+    assert back.replies == [RECALLED.format(number=2)] and back.files[0].fp.read() == PNG
+    mock_api.reply = "girl, medium hair, red ribbon"
+    await bot.on_message(FakeMessage("!refine add a ribbon", ch))
+    await finish(bot)
+    assert "prompt: girl, medium hair" in mock_api.requests[-1]["messages"][0]["content"][0]["text"]
+    pictures, base = bot.images.history(BOT_CHANNEL, 1)
+    assert len(pictures) == 4 and base == 3  # the very long hair one is still there
+    for _ in range(3):
+        await bot.on_message(FakeMessage("!draw more", ch))
+        await finish(bot)
+    assert len(bot.images.history(BOT_CHANNEL, 1)[0]) == 5  # only the last 5 are kept
+    bad = FakeMessage("!recall 9", ch)
+    await bot.on_message(bad)
+    assert bad.replies[0].startswith("Pick 1 to 5")
+
+
+async def test_changed_tags_win_and_replaced_ones_go_to_the_negative(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    mock_api.reply = "1girl, short hair"
+    await bot.on_message(FakeMessage("!draw a girl", ch))
+    await finish(bot)
+    mock_api.reply = "(medium hair:1.3), 1girl AVOID: short hair, very short hair"
+    await bot.on_message(FakeMessage("!refine hair to the shoulders", ch))
+    await finish(bot)
+    job = comfy.jobs[-1]
+    assert job["2"]["inputs"]["text"] == "(medium hair:1.3), 1girl"
+    assert job["3"]["inputs"]["text"].endswith("signature, short hair, very short hair")
+    asked = mock_api.requests[-1]["messages"][0]["content"][0]["text"]
+    assert "medium hair (to the shoulders)" in asked and "AVOID:" in asked
+
+
+async def test_realistic_pictures_keep_anime_out(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    mock_api.reply = "photo of a woman, film grain AVOID:"
+    await bot.on_message(FakeMessage("!draw realistic a woman", FakeChannel(BOT_CHANNEL)))
+    await finish(bot)
+    job = comfy.jobs[0]
+    assert job["2"]["inputs"]["text"] == "photo of a woman, film grain"
+    assert "anime" in job["3"]["inputs"]["text"] and "cel shading" in job["3"]["inputs"]["text"]
+    await bot.on_message(FakeMessage("!draw a girl", FakeChannel(BOT_CHANNEL)))
+    await finish(bot)
+    assert "anime" not in comfy.jobs[1]["3"]["inputs"]["text"]
+
+
+async def test_edit_redraws_the_uploaded_picture_without_saving_it(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    missing = FakeMessage("!edit make the hair red", ch)
+    await bot.on_message(missing)
+    assert missing.replies == [NO_PICTURE]
+    mock_api.reply = "(red hair:1.3), 1girl AVOID: black hair"
+    msg = FakeMessage("!edit make the hair red", ch, attachments=[FakeAttachment(b"JPEGDATA", "image/jpeg")])
+    await bot.on_message(msg)
+    await finish(bot)
+    assert msg.replies[1].filename == "image.png"
+    job = comfy.jobs[0]
+    assert job["8"]["class_type"] == "BotLoadImageBase64"
+    assert job["8"]["inputs"]["image"] == "SlBFR0RBVEE="  # the upload rides inside the job, no file upload
+    assert job["4"]["class_type"] == "VAEEncode" and job["5"]["inputs"]["denoise"] < 1
+    asked = mock_api.requests[-1]["messages"][0]["content"]
+    assert "make the hair red" in asked[0]["text"]
+    assert asked[1]["image_url"]["url"] == "data:image/jpeg;base64,SlBFR0RBVEE="  # Gemma sees the upload
+    mock_api.reply = "(red hair:1.3), 1girl, smile"
+    await bot.on_message(FakeMessage("!refine smile", ch))
+    await finish(bot)
+    again = comfy.jobs[1]
+    assert again["8"]["inputs"]["image"] == "SlBFR0RBVEE="  # refined from the upload again, same seed
+    assert again["5"]["inputs"]["seed"] == job["5"]["inputs"]["seed"]
+
+
+async def test_edit_asks_for_a_comfyui_restart_when_the_node_is_missing(mock_api, comfy, events):
+    comfy.has_edit_node = False
+    bot = image_bot(mock_api.base_url, comfy.url)
+    msg = FakeMessage("!edit red hair", FakeChannel(BOT_CHANNEL),
+                      attachments=[FakeAttachment(b"PNGDATA", "image/png")])
+    await bot.on_message(msg)
+    await finish(bot)
+    assert "restart" in msg.replies[1] and comfy.jobs == []
+    assert events[-1].startswith("lms load")
+
+
+def test_edit_node_is_copied_into_comfyui(tmp_path, mock_api):
+    (tmp_path / "ComfyUI" / "custom_nodes").mkdir(parents=True)
+    ImageMaker(make_bot(mock_api.base_url).brain, "http://x", {"anime": "m"}, comfy_dir=str(tmp_path))
+    copied = tmp_path / "ComfyUI" / "custom_nodes" / "discord_bot_image.py"
+    assert copied.read_text() == open(imagegen.NODE_FILE).read()

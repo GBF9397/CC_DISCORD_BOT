@@ -4,6 +4,8 @@ Gemma writes the Stable Diffusion prompt, then leaves the GPU (lms unload); Comf
 draws, then frees its model; Gemma comes back (lms load). No Discord code here.
 """
 import asyncio
+import base64
+import filecmp
 import json
 import logging
 import os
@@ -14,6 +16,7 @@ import subprocess
 import sys
 import uuid
 from collections import deque
+from dataclasses import dataclass
 
 import aiohttp
 
@@ -24,25 +27,51 @@ log = logging.getLogger("imagegen")
 # Written by Gemma for every request, without the persona or unfiltered note.
 PROMPT_WRITER = (
     "Turn the request below into one Stable Diffusion prompt: comma-separated English "
-    "tags, subject first, then style, lighting and quality tags. Under 60 words. Reply "
-    "with only the prompt. If the request is sexual and involves anyone who is or looks "
-    "under 18, or is a sexual or degrading picture of a real person, reply only REFUSED. "
+    "tags, subject first, then style, lighting and quality tags. Under 60 words. {style} "
+    "Reply with only the prompt, then on the same line AVOID: and any tags the picture must "
+    "not have, or nothing after AVOID:. If the request is sexual and involves anyone who is or "
+    "looks under 18, or is a sexual or degrading picture of a real person, reply only REFUSED. "
     "If it names a specific character, person, place, product or artwork (a proper name, "
     "even one you think you know), reply only SEARCH: <its name and series>.\n\n"
     "[Request]\n{request}"
 )
-# For /refine: change the channel's last prompt; the same seed keeps the overall look.
-REFINER = (
-    "Here is a Stable Diffusion prompt: {prompt}\n\nChange it as asked below and keep "
-    "everything else the same. If the picture drawn from it is attached, first make the "
-    "prompt describe exactly what it shows (subject, colors, fur or hair, clothes, pose, "
-    "background) so those stay the same. Reply with only the new prompt, comma-separated English "
-    "tags, under 60 words. If the change makes it sexual and involving anyone who is or "
-    "looks under 18, or a sexual or degrading picture of a real person, reply only REFUSED. "
-    "If the change names a specific character, person, place, product or artwork (a proper "
-    "name, even one you think you know), reply only SEARCH: <its name and series>."
-    "\n\n[Change]\n{request}"
+# Rules shared by /refine and /edit, so the change members ask for wins over the old picture.
+CHANGE_RULES = (
+    "The change always wins over the old prompt and the picture: delete every old tag it "
+    "contradicts (asking for shoulder-length hair means short hair must go), put the changed "
+    "tags first with weight 1.3, like (medium hair:1.3), and keep everything else. Use the "
+    "drawing model's own words: hair length from shortest is very short hair, short hair, "
+    "medium hair (to the shoulders), long hair (past the shoulders), very long hair (to the "
+    "waist); for a bit longer, shorter, bigger or darker move one step, not to the extreme. "
+    "Reply with only the new prompt, comma-separated English tags, under 60 words, {style} "
+    "then on the same line AVOID: and the old tags the change replaced (like AVOID: short hair). "
+    "If the change makes it sexual and involving anyone who is or looks under 18, or a sexual "
+    "or degrading picture of a real person, reply only REFUSED. If the change names a specific "
+    "character, person, place, product or artwork (a proper name, even one you think you know), "
+    "reply only SEARCH: <its name and series>."
 )
+# For /refine: change the member's chosen picture; the same seed keeps the overall look.
+REFINER = (
+    "Here is a Stable Diffusion prompt: {prompt}\n\nChange it as asked below. If the picture "
+    "drawn from it is attached, make the prompt also describe what it shows (subject, colors, "
+    "fur or hair, clothes, pose, background) so the parts the change doesn't touch stay the same. "
+    + CHANGE_RULES + "\n\n[Change]\n{request}"
+)
+# For /edit: the member's uploaded picture is redrawn by the drawing model with the change.
+EDITOR = (
+    "The attached picture will be redrawn by Stable Diffusion with the change below. Write the "
+    "prompt for the picture as it should look after the change: describe what it shows (subject, "
+    "colors, fur or hair, clothes, pose, background) plus the change. "
+    + CHANGE_RULES + "\n\n[Change]\n{request}"
+)
+# Tells Gemma which drawing model will read the prompt.
+STYLE_HINTS = {
+    "anime": "The drawing model is an anime model: use Danbooru tags.",
+    "realistic": ("The drawing model is a photo model: describe a real photograph and add photo, "
+                  "realistic, raw photo, film grain; never write anime, manga, illustration, cel "
+                  "shading or Danbooru quality tags like masterpiece; a character from anime or games "
+                  "is a real person in cosplay."),
+}
 # Added after a SEARCH: reply, so Gemma describes the look for ComfyUI, which has no internet.
 LOOKUP = ("\n\nNow write the prompt (do not reply SEARCH again). Draw only the subject the request "
           "names, never a game screen, menu, logo or character list. First read the web text below to "
@@ -55,8 +84,15 @@ LOOKUP = ("\n\nNow write the prompt (do not reply SEARCH again). Draw only the s
           "if the web text shows it came out before 2025. Otherwise leave out its name and series "
           "entirely, or the drawing model swaps in another character it knows from that series.\n\n"
           "[What the web says about it]\n{results}")
-NOTHING_TO_REFINE = "Nothing to refine yet in this channel. Draw one first with /draw or !draw."
+NOTHING_TO_REFINE = ("You have nothing to refine yet in this channel. Draw one first with /draw or !draw. "
+                     "你在这个频道还没有画过图，先用 /draw 或 !draw 画一张。")
 NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature"
+# Added to NEGATIVE for that style, so the photo model doesn't drift into drawing.
+STYLE_NEGATIVE = {"realistic": "anime, manga, cartoon, illustration, drawing, painting, 2d, cel shading, cgi, 3d render"}
+KEEP_VERSIONS = 5  # pictures per member per channel that /recall can go back to, RAM only
+EDIT_STRENGTH = 0.6  # how much /edit may change the uploaded picture (1.0 = draw from scratch)
+NODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_node.py")
+EDIT_NODE = "BotLoadImageBase64"  # in comfy_node.py, copied into ComfyUI's custom_nodes
 
 # Second line of defence in case the prompt writer lets one through.
 SEXUAL = re.compile(r"\b(nsfw|nude|naked|nudity|sex|sexual|porn|hentai|lewd|explicit|topless|"
@@ -74,6 +110,25 @@ class DrawError(Exception):
     """Something failed; the message is safe to show members."""
 
 
+@dataclass
+class Job:
+    """One queued picture. source is the picture /edit redraws; RAM only."""
+    request: str
+    channel_id: int
+    user_id: int
+    deliver: object
+    refine: bool = False
+    checkpoint: str = None
+    progress: object = None
+    source: bytes = None
+    style: str = None  # the channel's style when it was asked, see _refine_checkpoint
+    prompt: str = ""
+    negative: str = ""
+    seed: int = 0
+    png: bytes = None  # the finished picture, kept for /refine and /recall
+    source_type: str = "image/png"
+
+
 class ImageMaker:
     def __init__(self, brain, comfy_url, checkpoints, size=1024, context_length=16384,
                  timeout=600, comfy_dir="", startup_wait=180):
@@ -86,11 +141,14 @@ class ImageMaker:
         self.comfy_dir = comfy_dir  # ComfyUI_windows_portable folder, to start it when it's off
         self.startup_wait = startup_wait
         self.drawing = False  # while True the bot only takes picture requests
-        self.queue = deque()  # (request, channel_id, user_id, deliver, refine, checkpoint, progress), RAM only
+        self.queue = deque()  # Jobs, RAM only
         self.waiting = set()  # members with a picture queued or being drawn
-        self.last = {}  # channel_id -> (prompt, seed, checkpoint) of its last picture, RAM only
+        # (channel_id, user_id) -> that member's last KEEP_VERSIONS finished Jobs with their png, RAM only.
+        # Per member, so one member's /refine never builds on another member's picture.
+        self.versions = {}
+        self.base = {}  # (channel_id, user_id) -> index in versions the next /refine builds on
         self.styles = {}  # channel_id -> style name, RAM only
-        self.pictures = {}  # channel_id -> PNG of its last picture, shown to Gemma on refine, RAM only
+        self._install_node()
 
     def style(self, channel_id):
         return self.styles.get(channel_id, next(iter(self.checkpoints)))
@@ -103,28 +161,57 @@ class ImageMaker:
         self.styles[channel_id] = name
         return name
 
-    def submit(self, request, channel_id, user_id, deliver, refine=False, progress=None):
+    def style_of(self, checkpoint):
+        return next((name for name, file in self.checkpoints.items() if file == checkpoint), None)
+
+    def history(self, channel_id, user_id):
+        """The member's pictures here, oldest first, and the index /refine builds on."""
+        key = (channel_id, user_id)
+        return [job.png for job in self.versions.get(key, [])], self.base.get(key)
+
+    def recall(self, channel_id, user_id, number):
+        """Make picture `number` (1 = oldest) the one the next /refine builds on.
+        Returns its PNG, or None if there is no such picture. The others are kept."""
+        key = (channel_id, user_id)
+        kept = self.versions.get(key, [])
+        if not 1 <= number <= len(kept):
+            return None
+        self.base[key] = number - 1
+        return kept[number - 1].png
+
+    def _keep(self, job, png):
+        key = (job.channel_id, job.user_id)
+        job.png = png
+        kept = self.versions.setdefault(key, [])
+        kept.append(job)
+        del kept[:-KEEP_VERSIONS]
+        self.base[key] = len(kept) - 1
+
+    def submit(self, request, channel_id, user_id, deliver, refine=False, progress=None, source=None,
+               source_type="image/png"):
         """Queue a picture. Returns how many pictures are ahead (0 = starting now), or None if
         this member already has one waiting or being drawn. Raises DrawError if there is
         nothing to refine. deliver(png, error) is awaited
         with the PNG bytes or an error text once this picture is done; progress(percent),
-        if given, is awaited every 10% while ComfyUI draws it."""
+        if given, is awaited every 10% while ComfyUI draws it. source: picture bytes to
+        redraw with the change (/edit), kept in RAM only."""
         if user_id in self.waiting:
             return None
-        if refine and channel_id not in self.last and not any(job[1] == channel_id for job in self.queue):
+        if refine and (channel_id, user_id) not in self.versions:
             raise DrawError(NOTHING_TO_REFINE)
         ahead = len(self.waiting)
         self.waiting.add(user_id)
-        checkpoint = None  # a refine reuses its picture's model
-        if not refine:
-            # The style is fixed now, so a later /drawstyle doesn't change queued pictures.
-            # A request may start with a style name: "realistic a sports car".
-            first, _, rest = request.partition(" ")
-            style = self.style(channel_id)
-            if first.lower() in self.checkpoints and rest.strip():
-                style, request = first.lower(), rest.strip()
+        # The style is fixed now, so a later /drawstyle doesn't change queued pictures.
+        # A request may start with a style name: "realistic a sports car".
+        first, _, rest = request.partition(" ")
+        style, checkpoint = self.style(channel_id), None  # a refine without a style name decides later
+        if first.lower() in self.checkpoints and rest.strip():
+            style, request = first.lower(), rest.strip()
             checkpoint = self.checkpoints[style]
-        self.queue.append((request, channel_id, user_id, deliver, refine, checkpoint, progress))
+        elif not refine:
+            checkpoint = self.checkpoints[style]
+        self.queue.append(Job(request, channel_id, user_id, deliver, refine, checkpoint, progress, source,
+                              self.style(channel_id), source_type=source_type))
         if not self.drawing:
             self.drawing = True  # set before any await so the bot goes silent at once
             self._worker = asyncio.create_task(self._work())
@@ -141,27 +228,45 @@ class ImageMaker:
         except Exception:
             log.exception("Drawing failed")
             for job in self.queue:
-                await self._deliver(job[3], job[2], None, "Sorry, something went wrong while drawing.")
+                await self._deliver(job.deliver, job.user_id, None, "Sorry, something went wrong while drawing.")
             self.queue.clear()
         finally:
             self.waiting.clear()
             self.drawing = False
 
+    def _refine_checkpoint(self, job, old):
+        """A refine keeps its picture's model, unless the change starts with a style name or
+        the channel switched style after the picture was drawn."""
+        if job.checkpoint:
+            return job.checkpoint
+        if job.style != old.style:
+            return self.checkpoints[job.style]
+        return old.checkpoint
+
     async def _write_prompts(self):
         """Gemma (still loaded) writes the prompt for each queued picture."""
         jobs = []
         while self.queue:
-            request, channel_id, user_id, deliver, refine, checkpoint, progress = self.queue.popleft()
-            if refine and channel_id not in self.last:
-                await self._deliver(deliver, user_id, None, NOTHING_TO_REFINE)
-                continue
-            if refine:
-                old, seed, checkpoint = self.last[channel_id]
-                instruction = REFINER.format(prompt=old, request=request)
+            job = self.queue.popleft()
+            images = []
+            if job.refine:
+                key = (job.channel_id, job.user_id)
+                old = self.versions[key][self.base[key]]
+                job.checkpoint = self._refine_checkpoint(job, old)
+                # An edited picture is refined from its upload again, like a drawing from its seed.
+                job.seed, job.source, job.source_type = old.seed, old.source, old.source_type
+                instruction = REFINER.format(prompt=old.prompt, request=job.request,
+                                             style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
+                # Gemma sees the picture, so a refine keeps details the prompt never named.
+                images = [(old.png, "image/png")]
+            elif job.source:
+                job.seed = random.randrange(2**32)
+                instruction = EDITOR.format(request=job.request, style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
+                images = [(job.source, job.source_type)]
             else:
-                seed, instruction = random.randrange(2**32), PROMPT_WRITER.format(request=request)
-            # Gemma sees the last picture, so a refine keeps details the prompt never named.
-            images = [(self.pictures[channel_id], "image/png")] if refine and channel_id in self.pictures else []
+                job.seed = random.randrange(2**32)
+                instruction = PROMPT_WRITER.format(request=job.request,
+                                                   style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
             prompt = await self.brain.image_prompt(instruction, images)
             if prompt and prompt.startswith("SEARCH:"):  # one lookup per picture, results never stored
                 name = prompt[len("SEARCH:"):].strip()
@@ -171,12 +276,12 @@ class ImageMaker:
                 prompt = await self.brain.image_prompt(
                     instruction + LOOKUP.format(results=results or "(no results)"), images + found)
             if prompt is None:
-                await self._deliver(deliver, user_id, None, "Sorry, my brain (LM Studio) is offline right now.")
+                await self._deliver(job.deliver, job.user_id, None, "Sorry, my brain (LM Studio) is offline right now.")
             elif prompt.startswith("REFUSED") or blocked(prompt):
-                await self._deliver(deliver, user_id, None, "Sorry, I won't draw that.")
+                await self._deliver(job.deliver, job.user_id, None, "Sorry, I won't draw that.")
             else:
-                self.last[channel_id] = (prompt, seed, checkpoint)  # a queued /refine builds on it
-                jobs.append((prompt, seed, checkpoint, channel_id, user_id, deliver, progress))
+                job.prompt, _, job.negative = (part.strip(" ,.") for part in prompt.partition("AVOID:"))
+                jobs.append(job)
         return jobs
 
     async def _draw_all(self, jobs):
@@ -184,14 +289,17 @@ class ImageMaker:
         log.info("Drawing %d picture(s); unloading %s from the GPU", len(jobs), self.brain.model)
         await self._lms("unload", self.brain.model)
         try:
-            for prompt, seed, checkpoint, channel_id, user_id, deliver, progress in jobs:
+            for job in jobs:
                 try:
-                    png = await self._comfy(prompt, seed, checkpoint, progress)
+                    if job.source and not await self._has_edit_node():
+                        raise DrawError("Sorry, /edit needs ComfyUI restarted once. Close ComfyUI and "
+                                        "I'll start it again. /edit 需要先重启一次 ComfyUI。")
+                    png = await self._comfy(job, job.progress)
                 except DrawError as e:
-                    await self._deliver(deliver, user_id, None, str(e))
+                    await self._deliver(job.deliver, job.user_id, None, str(e))
                 else:
-                    self.pictures[channel_id] = png
-                    await self._deliver(deliver, user_id, png, None)
+                    self._keep(job, png)
+                    await self._deliver(job.deliver, job.user_id, png, None)
         finally:
             await self._free_comfy()
             log.info("Loading %s back onto the GPU", self.brain.model)
@@ -225,15 +333,17 @@ class ImageMaker:
             log.error("lms %s failed: %s", args[0], out.decode(errors="replace").strip()[-300:])
         return proc.returncode == 0
 
-    def _workflow(self, prompt, seed, checkpoint):
-        return {
-            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": checkpoint}},
-            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["1", 1]}},
-            "3": {"class_type": "CLIPTextEncode", "inputs": {"text": NEGATIVE, "clip": ["1", 1]}},
+    def _workflow(self, job):
+        negative = ", ".join(n for n in (NEGATIVE, STYLE_NEGATIVE.get(self.style_of(job.checkpoint), ""),
+                                         job.negative) if n)
+        flow = {
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": job.checkpoint}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": job.prompt, "clip": ["1", 1]}},
+            "3": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["1", 1]}},
             "4": {"class_type": "EmptyLatentImage",
                   "inputs": {"width": self.size, "height": self.size, "batch_size": 1}},
             "5": {"class_type": "KSampler", "inputs": {
-                "seed": seed, "steps": 25, "cfg": 6.0,
+                "seed": job.seed, "steps": 25, "cfg": 6.0,
                 "sampler_name": "euler_ancestral", "scheduler": "normal", "denoise": 1.0,
                 "model": ["1", 0], "positive": ["2", 0], "negative": ["3", 0],
                 "latent_image": ["4", 0]}},
@@ -242,14 +352,22 @@ class ImageMaker:
             # so the picture is never written to disk, only held in RAM.
             "7": {"class_type": "SaveImageWebsocket", "inputs": {"images": ["6", 0]}},
         }
+        if job.source:
+            # /edit: the upload goes inside the job, not through ComfyUI's upload (which saves a file),
+            # and is redrawn only partly so it keeps its shape.
+            flow["8"] = {"class_type": EDIT_NODE, "inputs": {
+                "image": base64.b64encode(job.source).decode(), "size": self.size}}
+            flow["4"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["8", 0], "vae": ["1", 2]}}
+            flow["5"]["inputs"]["denoise"] = EDIT_STRENGTH
+        return flow
 
-    async def _comfy(self, prompt, seed, checkpoint, progress=None):
+    async def _comfy(self, job, progress=None):
         client = uuid.uuid4().hex
         ws_url = self.comfy_url.replace("http", "ws", 1) + f"/ws?clientId={client}"
         try:
             async with aiohttp.ClientSession() as http, http.ws_connect(ws_url, max_msg_size=0) as ws:
                 async with http.post(f"{self.comfy_url}/prompt", json={
-                        "prompt": self._workflow(prompt, seed, checkpoint), "client_id": client}) as r:
+                        "prompt": self._workflow(job), "client_id": client}) as r:
                     body = await r.json(content_type=None)
                     if r.status != 200 or "prompt_id" not in body:
                         # Only the error type: details can echo the prompt, and nothing members wrote is logged.
@@ -326,6 +444,27 @@ class ImageMaker:
             if await self._comfy_running():
                 return
         log.error("ComfyUI did not come up within %d seconds", self.startup_wait)
+
+    def _install_node(self):
+        """Put the /edit loader node into ComfyUI's custom_nodes; ComfyUI reads it when it starts."""
+        if not self.comfy_dir:
+            return
+        target = os.path.join(self.comfy_dir, "ComfyUI", "custom_nodes", "discord_bot_image.py")
+        try:
+            if not (os.path.exists(target) and filecmp.cmp(NODE_FILE, target, shallow=False)):
+                shutil.copyfile(NODE_FILE, target)
+                log.info("Added the /edit node to ComfyUI's custom_nodes")
+        except OSError as e:
+            log.error("Could not add the /edit node to ComfyUI: %s", e)
+
+    async def _has_edit_node(self):
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.get(f"{self.comfy_url}/object_info/{EDIT_NODE}",
+                                    timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    return r.status == 200 and EDIT_NODE in await r.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            return False
 
     async def _free_comfy(self):
         """Ask ComfyUI to drop its model from the GPU and forget the job's prompt. Never raises."""
