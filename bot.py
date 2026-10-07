@@ -1,4 +1,5 @@
 """Discord chat bot backed by the local Gemma 4 Bionic model in LM Studio."""
+import asyncio
 import io
 import logging
 import os
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 
 from core import (CUSTOM_MAX_CHARS, PERSONAS, Brain, ChannelMemory, apply_extras, extras_note,
                   load_config, load_meanings, split_message)
+import monitor
 from imagegen import DrawError, ImageMaker
 from search import needs_search, web_search
 
@@ -259,6 +261,13 @@ class ChatBot(discord.Client):
             await interaction.response.send_message(
                 f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
 
+        @self.tree.command(name="status", description="Show how busy the bot's PC is (graphics card, CPU, RAM)")
+        async def status(interaction: discord.Interaction):
+            # Works while drawing too, so members can see the graphics card load.
+            stats = await asyncio.to_thread(monitor.read, 0.5)
+            await interaction.response.send_message("```\n" + "\n".join(monitor.lines(stats)) + "\n```",
+                                                    ephemeral=True)
+
         if self.images is None:
             return
 
@@ -391,6 +400,8 @@ def main():
     if not config["token"]:
         sys.exit("DISCORD_TOKEN is missing. Copy .env.example to .env and paste your bot token there.")
     lower_priority()
+    if config["monitor_window"]:
+        monitor.open_window()
     for name in ("httpx", "httpx2"):  # their INFO lines carry request URLs
         logging.getLogger(name).setLevel(logging.WARNING)
     for name in ("primp", "ddgs"):  # their lines carry web search queries; search.py logs failures itself

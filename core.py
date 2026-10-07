@@ -339,4 +339,5 @@ def load_config():
         "sd_checkpoint_realistic": os.getenv("SD_CHECKPOINT_REALISTIC", "").strip(),
         "image_size": int(os.getenv("IMAGE_SIZE", "") or 1024),
         "lmstudio_context": int(os.getenv("LMSTUDIO_CONTEXT", "") or 16384),
+        "monitor_window": os.getenv("MONITOR_WINDOW", "").strip().lower() not in ("0", "off", "false", "no"),
     }
