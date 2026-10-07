@@ -43,6 +43,8 @@ CHANGE_RULES = (
     "drawing model's own words: hair length from shortest is very short hair, short hair, "
     "medium hair (to the shoulders), long hair (past the shoulders), very long hair (to the "
     "waist); for a bit longer, shorter, bigger or darker move one step, not to the extreme. "
+    "Write color codes like #98FB98 as color names (pale green hair). Something the change "
+    "says to remove (no backlight) goes after AVOID:, never into the prompt. "
     "Reply with only the new prompt, comma-separated English tags, under 60 words, {style} "
     "then on the same line AVOID: and the old tags the change replaced (like AVOID: short hair). "
     "If the change makes it sexual and involving anyone who is or looks under 18, or a sexual "
