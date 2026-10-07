@@ -447,9 +447,11 @@ async def test_realistic_pictures_keep_anime_out(mock_api, comfy, events):
     job = comfy.jobs[0]
     assert job["2"]["inputs"]["text"] == "photo of a woman, film grain"
     assert "anime" in job["3"]["inputs"]["text"] and "cel shading" in job["3"]["inputs"]["text"]
+    assert job["5"]["inputs"]["sampler_name"] == "dpmpp_2m" and job["5"]["inputs"]["cfg"] == 4.5
     await bot.on_message(FakeMessage("!draw a girl", FakeChannel(BOT_CHANNEL)))
     await finish(bot)
     assert "anime" not in comfy.jobs[1]["3"]["inputs"]["text"]
+    assert comfy.jobs[1]["5"]["inputs"]["sampler_name"] == "euler_ancestral"
 
 
 async def test_edit_redraws_the_uploaded_picture_without_saving_it(mock_api, comfy, events):

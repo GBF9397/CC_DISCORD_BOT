@@ -89,6 +89,8 @@ NOTHING_TO_REFINE = ("You have nothing to refine yet in this channel. Draw one f
 NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature"
 # Added to NEGATIVE for that style, so the photo model doesn't drift into drawing.
 STYLE_NEGATIVE = {"realistic": "anime, manga, cartoon, illustration, drawing, painting, 2d, cel shading, cgi, 3d render"}
+# Sampler settings per style; Juggernaut XL (the realistic model) is made for DPM++ 2M Karras at a low CFG.
+STYLE_SAMPLER = {"realistic": {"sampler_name": "dpmpp_2m", "scheduler": "karras", "steps": 30, "cfg": 4.5}}
 KEEP_VERSIONS = 5  # pictures per member per channel that /recall can go back to, RAM only
 EDIT_STRENGTH = 0.6  # how much /edit may change the uploaded picture (1.0 = draw from scratch)
 NODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_node.py")
@@ -352,6 +354,7 @@ class ImageMaker:
             # so the picture is never written to disk, only held in RAM.
             "7": {"class_type": "SaveImageWebsocket", "inputs": {"images": ["6", 0]}},
         }
+        flow["5"]["inputs"].update(STYLE_SAMPLER.get(self.style_of(job.checkpoint), {}))
         if job.source:
             # /edit: the upload goes inside the job, not through ComfyUI's upload (which saves a file),
             # and is redrawn only partly so it keeps its shape.
