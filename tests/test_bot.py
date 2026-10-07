@@ -160,7 +160,7 @@ async def test_image_attachments_are_sent_to_the_model(mock_api):
     await bot.on_message(msg)
     assert msg.replies == ["echo: user1: what is this?"]
     parts = mock_api.requests[0]["messages"][-1]["content"]
-    assert parts[0] == {"type": "text", "text": "user1: what is this?"}
+    assert parts[0]["text"].startswith("user1: what is this?\n\n[Length limit")
     assert parts[1:] == [{"type": "image_url", "image_url": {"url": "data:image/png;base64,UE5HREFUQQ=="}}]
     # Memory keeps only text, never the image bytes.
     assert bot.memory.get(BOT_CHANNEL)[0]["content"] == "user1: what is this? [sent 1 image(s)]"
@@ -300,6 +300,37 @@ async def test_learns_from_how_members_use_emoji(mock_api, monkeypatch):
     system = mock_api.requests[0]["messages"][0]["content"]
     assert 'kekw (used like "lol you lost again :kekw:")' in system
     assert 'catjam (used like "party time ' in system and '..."' in system
+
+
+async def test_comment_messages_get_no_reply_and_are_not_remembered(mock_api):
+    bot = make_bot(mock_api.base_url)
+    ch = FakeChannel(BOT_CHANNEL)
+    for text in ("/comment 你们晚上打不打", "/Comment lol", f"<@{BOT_ID}> /comment hi", "／comment 好"):
+        msg = FakeMessage(text, ch, mentions=[bot.user])
+        await bot.on_message(msg)
+        assert msg.replies == []
+    assert mock_api.requests == [] and bot.memory.get(BOT_CHANNEL) == []
+    msg = FakeMessage("/commentary please", ch)
+    await bot.on_message(msg)
+    assert msg.replies  # only the /comment word itself is skipped
+
+
+async def test_character_persona_searches_for_fact_questions(mock_api, monkeypatch):
+    import bot as bot_module
+    queries = []
+
+    async def fake_search(query):
+        queries.append(query)
+        return "Opera Epiclese"
+    monkeypatch.setattr(bot_module, "web_search", fake_search)
+    bot = make_bot(mock_api.base_url)
+    bot.brain.set_persona(BOT_CHANNEL, "Furina", character="Furina Genshin")
+    ch = FakeChannel(BOT_CHANNEL)
+    await bot.on_message(FakeMessage("what is the opera house called?", ch))
+    await bot.on_message(FakeMessage("haha nice", ch))
+    assert queries == ["Furina Genshin what is the opera house called?"]
+    assert "Opera Epiclese" in mock_api.requests[0]["messages"][-1]["content"]
+    assert "Opera Epiclese" not in mock_api.requests[1]["messages"][-1]["content"]
 
 
 async def test_bang_search_reply_has_no_length_cap(mock_api, monkeypatch):

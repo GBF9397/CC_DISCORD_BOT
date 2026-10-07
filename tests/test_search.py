@@ -31,7 +31,7 @@ async def test_time_sensitive_message_gets_results_but_memory_stays_clean(mock_a
     assert calls == ["who won the match today?"]
     sent = mock_api.requests[0]["messages"][-1]["content"]
     assert "Team A won 3-1" in sent and "https://news.example/match" in sent
-    assert sent.endswith("user1: who won the match today?")
+    assert "[Message]\nuser1: who won the match today?\n\n[Length limit" in sent
     assert bot.memory.get(BOT_CHANNEL)[0] == {"role": "user", "content": "user1: who won the match today?"}
 
 

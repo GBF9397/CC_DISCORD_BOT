@@ -9,6 +9,8 @@ from datetime import date
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
+from search import is_fact_question
+
 SYSTEM_PROMPT = (
     "You are a member of a Discord server chatting with friends, not a customer-service "
     "assistant. Several people may talk to you; each user message starts with the "
@@ -58,6 +60,24 @@ DEFAULT_PERSONA = "buddy"
 CUSTOM_MAX_CHARS = 300
 CHARACTER_MAX_CHARS = 1500
 
+# Gemma leaned on the same few catchphrases and called pictures of the character
+# itself "insects", so a character persona carries these reminders.
+CHARACTER_STYLE = (
+    " Catchphrases and signature words are seasoning: use one only now and then, and "
+    "never repeat a word or phrase from your last few replies; answer what was actually "
+    "said or shown, in fresh words. In pictures, recognise {name} and {name}'s allies "
+    "before reacting, and never mock yourself."
+)
+# A character persona's own quiet lookups, separate from /search.
+LORE_EVERY = 8  # refresh who the character is every this many chat messages
+LORE_QUERY_CHARS = 80
+LORE_NOTE = (
+    "[Background notes you looked up quietly to stay true to your character and their "
+    "world. Use them to get names and facts right and prefer them over what you remember; "
+    "ignore what doesn't fit. Never mention looking anything up; just answer in character.]"
+    "\n\n{results}\n\n[Message]\n"
+)
+
 CHARACTER_PROMPT = (
     "Write a roleplay brief so an actor can play {name}. Use the web results below and "
     "what you know. Cover in under 200 words: who they are and where they come from (game, "
@@ -82,6 +102,8 @@ STICKER_TAG = re.compile(r"\s*\[sticker:\s*([^\]]+)\]", re.IGNORECASE)
 EMOJI_TAG = re.compile(r"(?<![<A-Za-z0-9_])[:：]([\w~-]{2,32})[:：]")
 # The model sometimes ends a reply with an emoji name but no colons, e.g. "...NPC。wat".
 TRAILING_NAME = re.compile(r"(?<![\w:：])([\w~-]{2,32})$")
+# ...or with only the first colon, e.g. ":wat 好吧" (Discord names are ASCII).
+LEADING_COLON = re.compile(r"(?<![<A-Za-z0-9_:：])[:：]([A-Za-z0-9_~-]{2,32})(?![A-Za-z0-9_~:：-])")
 MAX_EXTRAS = 50  # names listed per kind, to keep the prompt small
 
 
@@ -107,33 +129,40 @@ def apply_extras(reply, emojis, stickers):
     reply = STICKER_TAG.sub("", reply).strip()
     reply = EMOJI_TAG.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
     reply = TRAILING_NAME.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
+    reply = LEADING_COLON.sub(lambda m: emojis.get(m.group(1), m.group(0)), reply)
     reply = re.sub(r"(?<=\S)(<a?:\w+:\d+>)", r" \1", reply)  # a space before each emoji
     return (reply if reply or sticker else "..."), sticker
 
 
 # Each chat reply draws a fresh length cap so answers stay short and varied.
 REPLY_LENGTHS = (10, 30, 50, 100)
+# Sent with the newest message, not the system prompt, so the model doesn't lose it
+# behind 30 messages of history. Never stored in memory.
 LENGTH_NOTE = (
-    "\n\nLength limit for this reply: at most {n} Chinese characters, or {n} words if you "
-    "reply in English (an emoji counts as one). Say less rather than stopping mid-sentence, "
-    "even if your earlier replies were longer."
+    "\n\n[Length limit for this reply: at most {n} Chinese characters, or {n} words if you "
+    "reply in English (an emoji counts as one). Plan a reply that fits and finish your "
+    "sentence, even if your earlier replies were longer.]"
 )
 # One length unit: a CJK character or punctuation mark, or a run of other non-space text.
 CJK = "\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef"
 LENGTH_UNIT = re.compile(f"[{CJK}]|[^\\s{CJK}]+")
 SENTENCE_END = re.compile(r"[。！？!?…~～]+|\.(?=\s|$)")
+CLAUSE_END = re.compile(r"[，,、；;]")
+SLACK = 1.5  # a reply a bit over its limit is kept whole: a cut looks like a broken reply
 
 
 def shorten(reply, limit):
-    """Safety net for replies over the limit: cut at the last sentence end that keeps
-    at least half the text, else cut at the limit and add an ellipsis."""
+    """Safety net for replies well over the limit: cut at the last sentence end, else
+    the last comma, that keeps at least a third of the text; only then add an ellipsis."""
     units = list(LENGTH_UNIT.finditer(reply))
-    if len(units) <= limit:
+    allowed = int(limit * SLACK)
+    if len(units) <= allowed:
         return reply
-    cut = reply[:units[limit - 1].end()]
-    ends = [m.end() for m in SENTENCE_END.finditer(cut)]
-    if ends and ends[-1] >= len(cut) // 2:
-        return cut[:ends[-1]].rstrip()
+    cut = reply[:units[allowed - 1].end()]
+    for pattern in (SENTENCE_END, CLAUSE_END):
+        ends = [m.end() for m in pattern.finditer(cut)]
+        if ends and ends[-1] >= len(cut) // 3:
+            return cut[:ends[-1]].rstrip().rstrip("，,、；;")
     return cut.rstrip() + "…"
 
 
@@ -185,15 +214,35 @@ class Brain:
         self.top_p = top_p
         self._lock = asyncio.Lock()  # asyncio locks wake waiters in FIFO order
         self._personas = {}  # channel_id -> personality text, RAM only
+        self._characters = {}  # channel_id -> character name for /persona character, RAM only
+        self._turns = defaultdict(int)  # channel_id -> chat messages since the persona was set
         self.unfiltered = unfiltered
 
     def persona(self, channel_id):
         return self._personas.get(channel_id, PERSONAS[DEFAULT_PERSONA])
 
-    def set_persona(self, channel_id, text):
-        """Switch this channel's personality and forget the chat, so the old voice doesn't linger."""
+    def set_persona(self, channel_id, text, character=None):
+        """Switch this channel's personality and forget the chat, so the old voice doesn't linger.
+        character: the name, when the persona is a known character it can look things up about."""
         self._personas[channel_id] = text
+        self._characters.pop(channel_id, None)
+        if character:
+            self._characters[channel_id] = character
+        self._turns.pop(channel_id, None)
         self.memory.reset(channel_id)
+
+    def lore_query(self, channel_id, text):
+        """What a character persona quietly looks up before answering this message, or None:
+        the question itself when it asks about facts, else a refresh of who they are now and then."""
+        name = self._characters.get(channel_id)
+        if not name or not text:
+            return None
+        self._turns[channel_id] += 1
+        if is_fact_question(text):
+            return f"{name} {text[:LORE_QUERY_CHARS]}"
+        if self._turns[channel_id] % LORE_EVERY == 0:
+            return f"{name} character personality speech style quotes"
+        return None
 
     async def character_persona(self, name, search_results=""):
         """Turn a character name and web results into a personality text, or None if unknown or offline."""
@@ -211,7 +260,7 @@ class Brain:
         if not brief or "UNKNOWN" in brief[:20]:
             return None
         return (f"{name}. Stay fully in character as {name}: talk, think and react the way "
-                f"they do, in their voice.\n{brief[:CHARACTER_MAX_CHARS]}")
+                f"they do, in their voice.{CHARACTER_STYLE.format(name=name)}\n{brief[:CHARACTER_MAX_CHARS]}")
 
     async def describe(self, image, mime="image/png"):
         """A few words on what an emoji/sticker picture means, or "" if the model can't say."""
@@ -245,14 +294,21 @@ class Brain:
             return None
         return " ".join((resp.choices[0].message.content or "").split()) or None
 
-    async def ask(self, channel_id, user_name, text, images=(), search_results="", extras="", limited=True):
+    async def ask(self, channel_id, user_name, text, images=(), search_results="", extras="", limited=True,
+                  lore=""):
         """images: (bytes, mime type) pairs, sent to the model and never stored.
         search_results: web results sent to the model once, never stored.
+        lore: web results a character persona quietly looked up for this message, never stored.
         extras: extras_note() text about the server's emoji and stickers.
         limited: False skips the random length cap (used by /search and !search)."""
         user_msg = remembered = f"{user_name}: {text}"
         if search_results:
             user_msg = SEARCH_NOTE.format(today=f"{date.today():%A %d %B %Y}", results=search_results) + user_msg
+        elif lore:
+            user_msg = LORE_NOTE.format(results=lore) + user_msg
+        limit = random.choice(REPLY_LENGTHS) if limited else None
+        if limit:
+            user_msg += LENGTH_NOTE.format(n=limit)
         if images:
             remembered += f" [sent {len(images)} image(s)]"
             user_msg = [{"type": "text", "text": user_msg}] + [
@@ -260,11 +316,9 @@ class Brain:
                  "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
                 for data, mime in images
             ]
-        limit = random.choice(REPLY_LENGTHS) if limited else None
         async with self._lock:
             messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id)
-                         + (UNFILTERED_NOTE if self.unfiltered else "") + extras
-                         + (LENGTH_NOTE.format(n=limit) if limit else "")}]
+                         + (UNFILTERED_NOTE if self.unfiltered else "") + extras}]
             messages += self.memory.get(channel_id)
             messages.append({"role": "user", "content": user_msg})
             try:

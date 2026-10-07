@@ -33,6 +33,8 @@ QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again 
 ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
                   "你已经有一张在排队了，画完才能再点。")
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
+# "/comment ..." is a plain message, not a registered slash command, so it still posts.
+COMMENT = re.compile(r"\s*(<@!?\d+>\s*)?[/／]comment\b", re.IGNORECASE)
 
 
 def lower_priority():
@@ -119,10 +121,13 @@ class ChatBot(discord.Client):
     async def answer(self, channel_id, user_name, text, images=(), search=False, guild=None, stickers=False):
         """Returns (reply text, sticker to send or None). Uses the server's own custom
         emoji, and on some replies (stickers=True) one of its stickers."""
-        results = ""
+        results = lore = ""
         if text and (search or needs_search(text)):
             log.info("Searching the web for a message in channel %s", channel_id)
             results = await web_search(text)
+        elif query := self.brain.lore_query(channel_id, text):
+            log.info("Character looking things up quietly in channel %s", channel_id)
+            lore = await web_search(query)
         emojis, sticker_map, labels, sticker_labels = {}, {}, [], []
         if guild is not None:
             hand = load_meanings()  # read each time so edits work without a restart
@@ -138,7 +143,7 @@ class ChatBot(discord.Client):
                             s.id, s.name, hand.get(s.name) or self.meanings.get(s.id) or s.description, s.emoji))
         reply = await self.brain.ask(channel_id, user_name, text, images, results,
                                      extras_note(labels, sticker_labels) + (DRAW_HINT if self.images else ""),
-                                     limited=not search)
+                                     limited=not search, lore=lore)
         return apply_extras(reply, emojis, sticker_map)
 
     def label(self, item_id, name, *hints):
@@ -242,7 +247,7 @@ class ChatBot(discord.Client):
                         f"Sorry, I couldn't find out enough about **{name}**. "
                         "Try adding the game or show, e.g. 'Ganyu Genshin Impact'.")
                     return
-                self.brain.set_persona(interaction.channel_id, text)
+                self.brain.set_persona(interaction.channel_id, text, character=name)
                 await interaction.followup.send(
                     f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
                 return
@@ -321,6 +326,8 @@ class ChatBot(discord.Client):
                  message.channel.id, message.author.id, len(message.content), len(message.attachments))
         if message.author.bot or (self.drawing() and not self.is_draw_request(message.content)):
             return
+        if COMMENT.match(message.content):
+            return  # members talking among themselves: no reply, nothing remembered
         self.note_usage(message)
         if not self.allowed(message.author):
             return

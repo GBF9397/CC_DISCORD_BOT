@@ -22,6 +22,7 @@ class MockLMStudio:
         last = body["messages"][-1]["content"]
         if isinstance(last, list):  # text + image parts
             last = last[0]["text"]
+        last = last.split("\n\n[Length limit", 1)[0]  # echo what the member wrote
         content = self.reply if self.reply is not None else f"echo: {last}"
         return web.json_response({
             "id": "chatcmpl-mock", "object": "chat.completion", "created": 0,

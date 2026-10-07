@@ -21,6 +21,18 @@ def needs_search(text):
     return bool(_TIME_SENSITIVE.search(text))
 
 
+# Questions about facts (names, places, who, when...), for a character persona's quiet lookups.
+_FACT_QUESTION = re.compile(
+    r"\b(what|who|whose|where|which|when|how (many|much|old|long|tall))\b"
+    r"|叫什么|什么名字|是什么|是谁|谁是|哪里|哪儿|哪个|哪位|哪一|多少|几岁|几个|什么时候|为什么|怎么回事",
+    re.IGNORECASE,
+)
+
+
+def is_fact_question(text):
+    return bool(_FACT_QUESTION.search(text))
+
+
 def _search(query, max_results):
     return DDGS().text(query, max_results=max_results)
 
