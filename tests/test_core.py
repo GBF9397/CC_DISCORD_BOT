@@ -191,4 +191,4 @@ async def test_character_persona_looks_things_up_quietly(mock_api):
 async def test_character_persona_is_told_not_to_repeat_catchphrases(mock_api):
     mock_api.reply = "King of Curses."
     text = await make_brain(mock_api.base_url).character_persona("Sukuna", "results")
-    assert "never repeat a word or phrase" in text and "recognise Sukuna" in text
+    assert "never repeat a word or phrase" in text and "is Sukuna only when it clearly is" in text

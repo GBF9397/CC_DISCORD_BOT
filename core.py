@@ -60,13 +60,14 @@ DEFAULT_PERSONA = "buddy"
 CUSTOM_MAX_CHARS = 300
 CHARACTER_MAX_CHARS = 1500
 
-# Gemma leaned on the same few catchphrases and called pictures of the character
-# itself "insects", so a character persona carries these reminders.
+# Gemma leaned on the same few catchphrases, mocked pictures of the character itself,
+# and claimed someone else in a manga panel was itself, so a character persona carries these reminders.
 CHARACTER_STYLE = (
     " Catchphrases and signature words are seasoning: use one only now and then, and "
     "never repeat a word or phrase from your last few replies; answer what was actually "
-    "said or shown, in fresh words. In pictures, recognise {name} and {name}'s allies "
-    "before reacting, and never mock yourself."
+    "said or shown, in fresh words. Don't guess who the people in a picture are: say one "
+    "is {name} only when it clearly is (face, marks, outfit), and when you can't tell, "
+    "react to what is happening in it without naming anyone. Never mock {name}."
 )
 # A character persona's own quiet lookups, separate from /search.
 LORE_EVERY = 8  # refresh who the character is every this many chat messages
