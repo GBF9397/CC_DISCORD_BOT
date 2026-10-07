@@ -6,6 +6,7 @@ import random
 import re
 import sys
 from collections import defaultdict, deque
+from datetime import datetime, timedelta
 
 import discord
 from discord import app_commands
@@ -33,6 +34,31 @@ QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again 
 ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
                   "你已经有一张在排队了，画完才能再点。")
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
+POLL_SPLIT = re.compile(r"[|/,，、]")
+NO_EVENT_PERMISSION = ("I need the Create Events permission in this server to do that. "
+                       "我在这个服务器没有「创建活动」权限，请管理员给我加上。")
+
+
+def poll_answers(options):
+    """Splits '是 | 不是' (also / , ， 、) into poll answers; empty means a yes/no poll."""
+    answers = [a.strip()[:55] for a in POLL_SPLIT.split(options or "") if a.strip()]
+    return answers or ["是 Yes", "不是 No"]
+
+
+def event_start(date, time, now=None):
+    """Parses date (2026-10-10, 2026/10/10, 10-10 or 10/10) and time (20:30) as the PC's local time.
+    Returns None if either can't be read. A date without a year that has passed means next year."""
+    now = now or datetime.now().astimezone()
+    date, time = date.strip(), time.strip().replace("：", ":")
+    for fmt, year in (("%Y-%m-%d", ""), ("%Y/%m/%d", ""), ("%Y-%m-%d", f"{now.year}-"), ("%Y/%m/%d", f"{now.year}/")):
+        try:
+            start = datetime.strptime(f"{year}{date} {time}", fmt + " %H:%M").replace(tzinfo=now.tzinfo)
+        except ValueError:
+            continue
+        if year and start < now:
+            start = start.replace(year=now.year + 1)
+        return start
+    return None
 
 
 def lower_priority():
@@ -258,6 +284,61 @@ class ChatBot(discord.Client):
             self.brain.set_persona(interaction.channel_id, text)
             await interaction.response.send_message(
                 f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
+
+        @self.tree.command(name="poll", description="Start a poll members vote on")
+        @app_commands.describe(question="What to vote on",
+                               options="Answers split by | , or /, e.g. '是 | 不是'; leave empty for yes/no",
+                               hours="How long voting stays open (1-768 hours, default 24)",
+                               multiple="Let members pick more than one answer")
+        async def poll(interaction: discord.Interaction, question: str, options: str = "",
+                       hours: app_commands.Range[int, 1, 768] = 24, multiple: bool = False):
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            answers = poll_answers(options)
+            if len(answers) > 10:
+                await interaction.response.send_message(
+                    "A poll can have at most 10 answers. 投票最多 10 个选项。", ephemeral=True)
+                return
+            vote = discord.Poll(question=question[:300], duration=timedelta(hours=hours), multiple=multiple)
+            for answer in answers:
+                vote.add_answer(text=answer)
+            await interaction.response.send_message(poll=vote)
+
+        @self.tree.command(name="event", description="Create a server event with a date, time and place")
+        @app_commands.describe(name="What the event is", date="Date, e.g. 2026-10-10 or 10-10",
+                               time="Start time, 24-hour, e.g. 20:30", place="Where it happens",
+                               hours="How long it lasts (default 2 hours)", details="More about it (optional)")
+        async def event(interaction: discord.Interaction, name: str, date: str, time: str, place: str,
+                        hours: app_commands.Range[float, 0.25, 72.0] = 2.0, details: str = ""):
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            if interaction.guild is None:
+                await interaction.response.send_message("Events only work in a server. 活动只能在服务器里建。",
+                                                        ephemeral=True)
+                return
+            start = event_start(date, time)
+            if start is None:
+                await interaction.response.send_message(
+                    "I can't read that date or time. Use e.g. date 2026-10-10 and time 20:30. "
+                    "日期或时间看不懂，请写成 2026-10-10 和 20:30。", ephemeral=True)
+                return
+            if start <= datetime.now().astimezone():
+                await interaction.response.send_message("That time has already passed. 这个时间已经过了。",
+                                                        ephemeral=True)
+                return
+            try:
+                created = await interaction.guild.create_scheduled_event(
+                    name=name[:100], start_time=start, end_time=start + timedelta(hours=hours),
+                    entity_type=discord.EntityType.external, privacy_level=discord.PrivacyLevel.guild_only,
+                    location=place[:100], description=details[:1000])
+            except discord.Forbidden:
+                await interaction.response.send_message(NO_EVENT_PERMISSION, ephemeral=True)
+                return
+            await interaction.response.send_message(
+                f"📅 {interaction.user.display_name} created an event 建了一个活动: **{created.name}**\n"
+                f"🕒 <t:{int(start.timestamp())}:F>\n📍 {created.location}\n{created.url}")
 
         if self.images is None:
             return
