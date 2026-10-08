@@ -420,7 +420,7 @@ async def test_poll_with_members_names_them_and_ends_once_they_all_voted(mock_ap
     interaction = slash_interaction()
     await bot.tree.get_command("poll").callback(interaction, "q", "", "<@11> <@!12> <@11>", None, False)
     content, _, vote = interaction.response.sent[0]
-    assert content == POLL_VOTERS + "<@11> <@12>" and vote.duration == timedelta(hours=768)
+    assert content == POLL_VOTERS + "<@11> <@12>" and vote.duration == timedelta(hours=168)
 
     interaction = slash_interaction()
     await bot.tree.get_command("poll").callback(interaction, "q", "", "Daddy宏", 768, False)
