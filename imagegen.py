@@ -430,8 +430,10 @@ class ImageMaker:
         remove = split_tags(edits.get("REMOVE", ""))
         gone = {core(t) for t in remove} | set(add)
         kept = [t for t in old.tags if core(t) not in gone]
-        job.tags = kept[:1] + add + kept[1:]  # after the subject (1girl), before the rest
-        job.prompt = ", ".join(kept[:1] + [f"({t}:1.3)" for t in add] + kept[1:])
+        # After the subject (1girl), before the rest. Tags nobody mentioned keep their exact text and
+        # weight, so an earlier change like (red hair:1.3) isn't pulled back toward the old picture.
+        job.tags = kept[:1] + [f"({t}:1.3)" for t in add] + kept[1:]
+        job.prompt = ", ".join(job.tags)
         avoid = [core(t) for t in remove + split_tags(edits.get("AVOID", ""))] + old.negative
         job.negative = list(dict.fromkeys(t for t in avoid if t not in add))[:MAX_AVOID]
         size = (edits.get("SIZE", "").split() or ["medium"])[0].lower().strip(" .,")

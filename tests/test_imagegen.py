@@ -446,8 +446,8 @@ async def test_refine_only_touches_what_the_member_asked_for(mock_api, comfy, ev
     await bot.on_message(FakeMessage("!refine natural skin", ch))
     await finish(bot)
     job = comfy.jobs[-1]
-    # The hair change from last round stays, without its extra weight; short hair stays avoided.
-    assert job["2"]["inputs"]["text"] == "1girl, (natural skin:1.3), medium hair, green hair, smile, black sweater"
+    # The hair change from last round stays with its weight; short hair stays avoided.
+    assert job["2"]["inputs"]["text"] == "1girl, (natural skin:1.3), (medium hair:1.3), green hair, smile, black sweater"
     assert "short hair, bob cut, lowres" in job["3"]["inputs"]["text"] and "pale skin" in job["3"]["inputs"]["text"]
     assert job["5"]["inputs"]["denoise"] == 0.55  # even a small change redraws over half
     mock_api.reply = "ADD: running REMOVE: smile SIZE: new"
