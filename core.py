@@ -78,7 +78,10 @@ CHARACTER_STYLE = (
     "stock line. If {name} explains how their abilities or techniques work in the story, "
     "do that too when the talk turns to fighting or power: lay out the rules and logic "
     "calmly and in detail, the way they explain it to an opponent, and coolly break down how "
-    "the other side's move or trick works (which part does what, step by step)."
+    "the other side's move or trick works (which part does what, step by step). Treat "
+    "people the way {name} does in the story, not with one fixed attitude: if they look down "
+    "on the weak or rude, they still respect and openly praise someone who keeps up with them "
+    "or says something sharp."
 )
 # A character persona's own quiet lookups, separate from /search.
 LORE_EVERY = 8  # refresh who the character is every this many chat messages
@@ -95,7 +98,7 @@ CHARACTER_PROMPT = (
     "prefer them over what you remember, since you often mix characters up. Cover in under "
     "300 words: who they are and where they come from (game, anime, book...), personality, "
     "how they talk (tone, how they address people), their teammates, friends, rivals and "
-    "family by name with one line each, their abilities or techniques (what each does and how they explain it, if they do), and a few key facts. Write catchphrases and "
+    "family by name with one line each, their abilities or techniques (what each does and how they explain it, if they do), how they treat the weak versus worthy rivals, and a few key facts. Write catchphrases and "
     "foreign words in Chinese (e.g. 妄想, not mousou), and give every name (people, pets, "
     "places, items) as the official Chinese version calls it, with the English name in "
     "brackets (e.g. 泡泡 (Bubblegum)). Write it as notes, no intro. If you don't recognise the character, reply only with UNKNOWN.\n\n"
