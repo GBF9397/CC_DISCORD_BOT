@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from core import (CUSTOM_MAX_CHARS, PERSONAS, Brain, ChannelMemory, apply_extras, extras_note,
                   load_config, load_meanings, split_message)
 import monitor
-from imagegen import DrawError, ImageMaker
+from imagegen import MAX_REFERENCES, DrawError, ImageMaker
 from search import needs_search, web_search
 
 log = logging.getLogger("bot")
@@ -402,7 +402,7 @@ class ChatBot(discord.Client):
         return RECALLED, [discord.File(io.BytesIO(png), "image.png")]
 
     def queue_picture(self, request, channel_id, user_id, refine, send, edit, source=None, source_type=None,
-                      reference=None, reference_type=None, private=False):
+                      references=(), private=False):
         """Queues a picture; send(text) / send(file=...) posts the result later, and
         edit(text) updates the notice with the drawing progress.
         Returns the notice to post now. The picture stays in RAM. A private picture goes into the
@@ -422,7 +422,7 @@ class ChatBot(discord.Client):
 
         try:
             ahead = self.images.submit(request, PRIVATE if private else channel_id, user_id, deliver, refine, progress,
-                                       source, source_type or "image/png", reference, reference_type or "image/png",
+                                       source, source_type or "image/png", references,
                                        style_channel=channel_id)
         except DrawError as e:
             return str(e)
@@ -437,7 +437,7 @@ class ChatBot(discord.Client):
         the picture only goes by DM, the request is deleted from the channel, and the channel only sees a
         notice that names no one. If the member can't get DMs, nothing is drawn."""
         uploads = [(await a.read(), a.content_type.split(";")[0]) for a in message.attachments  # RAM only,
-                   if (a.content_type or "").split(";")[0] in IMAGE_TYPES][:2]  # read before the delete
+                   if (a.content_type or "").split(";")[0] in IMAGE_TYPES][:1 + MAX_REFERENCES]  # before the delete
         try:
             dm = await message.author.create_dm()
             await dm.send(DM_ACK)
@@ -457,7 +457,7 @@ class ChatBot(discord.Client):
         if not rest or (command == "!edit" and not uploads):
             await dm.send(DM_USAGE if not rest else NO_PICTURE)
             return
-        (source, source_type), (reference, reference_type) = (uploads + [(None, None)] * 2)[:2]
+        source, source_type = uploads[0] if uploads else (None, None)
 
         async def send(text=None, file=None):
             if file:
@@ -471,7 +471,7 @@ class ChatBot(discord.Client):
                 await notices[0].edit(content=text)
 
         notice = self.queue_picture(rest, message.channel.id, message.author.id, command == "!refine", send, edit,
-                                    source, source_type, reference, reference_type, private=True)
+                                    source, source_type, uploads[1:], private=True)
         if notice.startswith("🎨"):
             notices.append(await message.channel.send(notice))
         else:  # already queued, nothing to refine: only the member hears it
@@ -788,13 +788,13 @@ class ChatBot(discord.Client):
                     await interaction.response.send_message(NO_PICTURE, ephemeral=True)
                     return
                 source = await image.read()  # RAM only
-            reference = reference_type = None
+            references = []
             if character is not None:
                 reference_type = (character.content_type or "").split(";")[0]
                 if reference_type not in IMAGE_TYPES:
                     await interaction.response.send_message(NO_PICTURE, ephemeral=True)
                     return
-                reference = await character.read()  # RAM only
+                references.append((await character.read(), reference_type))  # RAM only
             caption = f"{interaction.user.mention}: {request[:200]}"
             dm, notices = None, []
             if private:  # the picture goes by DM, so make sure one gets through before drawing
@@ -821,7 +821,7 @@ class ChatBot(discord.Client):
                     await notices[0].edit(content=text)
 
             notice = self.queue_picture(request, interaction.channel_id, interaction.user.id, refine, send, edit,
-                                        source, source_type, reference, reference_type, private=private)
+                                        source, source_type, references, private=private)
             if not private:
                 await interaction.response.send_message(notice, ephemeral=not notice.startswith("🎨"))  # refusals only to the asker
                 return
@@ -1007,15 +1007,16 @@ class ChatBot(discord.Client):
             await message.reply(EDIT_USAGE, mention_author=False)
             return
         if self.images and command in ("!draw", "!refine", "!edit") and text[len(command):].strip():
-            source = source_type = reference = reference_type = None
+            source = source_type = None
+            references = []
             if command == "!edit":
                 pictures = [a for a in message.attachments if (a.content_type or "").split(";")[0] in IMAGE_TYPES]
                 if not pictures:
                     await message.reply(NO_PICTURE, mention_author=False)
                     return
                 source, source_type = await pictures[0].read(), pictures[0].content_type.split(";")[0]  # RAM only
-                if len(pictures) > 1:  # a second picture: put its character into the first
-                    reference, reference_type = await pictures[1].read(), pictures[1].content_type.split(";")[0]
+                for picture in pictures[1:1 + MAX_REFERENCES]:  # more pictures: put their character into the first
+                    references.append((await picture.read(), picture.content_type.split(";")[0]))
 
             async def send(text=None, file=None):
                 # mention_author pings the member, since the picture can arrive minutes later.
@@ -1031,8 +1032,7 @@ class ChatBot(discord.Client):
                     await notice_message.edit(content=text)
 
             notice = self.queue_picture(text[len(command):].strip(), message.channel.id, message.author.id,
-                                        command == "!refine", send, edit, source, source_type, reference,
-                                        reference_type)
+                                        command == "!refine", send, edit, source, source_type, references)
             notice_message = await message.reply(notice, mention_author=False)
             return
         search = text.lower().startswith("!search ")

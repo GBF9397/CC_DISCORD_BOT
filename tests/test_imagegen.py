@@ -576,7 +576,7 @@ async def test_edit_with_a_second_picture_puts_that_character_in_the_first(mock_
     await finish(bot)
     assert msg.replies[1].filename == "image.png"
     asked = mock_api.requests[-1]["messages"][0]["content"]
-    assert "Picture 2" in asked[0]["text"]  # Gemma is told which picture is which
+    assert "The other pictures show one character" in asked[0]["text"]  # Gemma is told which picture is which
     assert asked[1]["image_url"]["url"] == "data:image/png;base64,QkFTRQ=="  # picture 1: redrawn
     assert asked[2]["image_url"]["url"] == "data:image/jpeg;base64,Q0hBUg=="  # picture 2: the character
     job = comfy.jobs[0]
@@ -596,7 +596,7 @@ async def test_slash_edit_passes_the_character_picture(mock_api, comfy, events):
     interaction.user.mention = "<@5>"
     await bot.tree.get_command("edit").callback(interaction, FakeAttachment(b"BASE", "image/png"), "换成她",
                                                FakeAttachment(b"CHAR", "image/jpeg"))
-    assert queued[0][-4:] == (b"BASE", "image/png", b"CHAR", "image/jpeg")
+    assert queued[0][-3:] == (b"BASE", "image/png", [(b"CHAR", "image/jpeg")])
 
 
 async def test_estimate_comes_from_this_pcs_last_pictures(mock_api, comfy, events):
@@ -872,7 +872,7 @@ async def test_swap_keeps_the_character_name_and_colors(mock_api, comfy, events)
                       attachments=[FakeAttachment(base, "image/png"), FakeAttachment(_picture((90, 140, 230)), "image/png")])
     await bot.on_message(msg)
     await finish(bot)
-    assert "Keep picture 2's character name" in mock_api.requests[-1]["messages"][0]["content"][0]["text"]
+    assert "Keep the name" in mock_api.requests[-1]["messages"][0]["content"][0]["text"]
     job = comfy.jobs[0]
     assert job["5"]["inputs"]["denoise"] == 0.75 and "ganyu (genshin impact)" in job["2"]["inputs"]["text"]
     sent = base64.b64decode(job["8"]["inputs"]["image"])
@@ -909,6 +909,33 @@ async def test_recolor_without_the_controlnet_file_falls_back(mock_api, comfy, e
     await finish(bot)
     job = comfy.jobs[0]
     assert "20" not in job and job["5"]["inputs"]["denoise"] == 0.6 and msg.replies[1].filename == "image.png"
+
+
+async def test_edit_takes_several_character_pictures(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    mock_api.reply = "1girl, (ganyu (genshin impact):1.3), (blue hair:1.3), maid outfit AVOID: pink hair"
+    msg = FakeMessage("!edit 第2和第3张的角色穿第1张的衣服", FakeChannel(BOT_CHANNEL), attachments=[
+        FakeAttachment(b"BASE", "image/png"), FakeAttachment(b"CHA1", "image/png"),
+        FakeAttachment(b"CHA2", "image/png"), FakeAttachment(b"CHA3", "image/png"),
+        FakeAttachment(b"CHA4", "image/png")])
+    await bot.on_message(msg)
+    await finish(bot)
+    asked = mock_api.requests[-1]["messages"][0]["content"]
+    assert len(asked) == 5  # the text, picture 1 and at most 3 character pictures
+    assert "pink hair" in comfy.jobs[0]["3"]["inputs"]["text"]  # picture 1's own looks go to the negative
+
+
+async def test_swap_loosely_follows_picture_1_with_controlnet(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    bot.images.controlnet = "controlnet-canny-sdxl.safetensors"
+    mock_api.reply = "1girl, (ganyu (genshin impact):1.3), (blue hair:1.3), maid outfit SIZE: big RECOLOR"
+    msg = FakeMessage("!edit 第2张的角色穿第1张的衣服", FakeChannel(BOT_CHANNEL), attachments=[
+        FakeAttachment(_picture((240, 160, 180)), "image/png"), FakeAttachment(_picture((90, 140, 230)), "image/png")])
+    await bot.on_message(msg)
+    await finish(bot)
+    job = comfy.jobs[0]
+    assert job["22"]["inputs"]["strength"] == 0.5 and job["22"]["inputs"]["end_percent"] == 0.6  # looser than a recolor
+    assert job["5"]["inputs"]["denoise"] == 0.9
 
 
 def test_sd_controlnet_is_read_from_env(monkeypatch):

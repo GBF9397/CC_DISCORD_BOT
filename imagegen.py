@@ -95,13 +95,16 @@ EDITOR = (
 )
 # For /edit with a second picture: that picture's character takes over the first one.
 SWAP_NOTE = (
-    "Picture 1 is the one being redrawn. Picture 2 shows a character to put into picture 1: keep "
-    "picture 1's clothes, pose, framing and background, but give the person picture 2's looks (hair "
-    "colour and style, eye colour, face, skin, horns, ears, hair ornaments), and name the character if "
-    "you know who it is. Keep picture 2's character name and series tags even though the outfit is new: "
-    "their usual looks are exactly what is wanted, so the rule about leaving names out doesn't apply, "
-    "and don't write RECOLOR. "
+    "Picture 1 is the one being redrawn. The other pictures show one character to put into picture 1: "
+    "keep picture 1's clothes, pose, framing and background, but give the person that character's looks "
+    "(hair colour and style, eye colour, face, skin, horns, ears, hair ornaments), and name the character if "
+    "you know who it is. Put the character's name and series tags and every distinctive feature first, "
+    "each with weight 1.3, like (blue hair:1.3), (goat horns:1.3), (purple eyes:1.3); after AVOID: list "
+    "picture 1's own looks that must go (its hair colour and style, eye colour, ears or horns the "
+    "character doesn't have). Keep the name even though the outfit is new: the character's usual looks "
+    "are exactly what is wanted, so the rule about leaving names out doesn't apply, and don't write RECOLOR. "
 )
+MAX_REFERENCES = 3  # character pictures one /edit takes after the picture it redraws
 # Tells Gemma which drawing model will read the prompt.
 STYLE_HINTS = {
     "anime": "The drawing model is an anime model: use Danbooru tags.",
@@ -165,6 +168,9 @@ RECOLOR_STRENGTH = 0.6
 # outlines instead: the shapes are locked, so it can redraw nearly all of it and the new colour wins.
 RECOLOR_CONTROLNET_STRENGTH = 0.9
 CONTROLNET_WEIGHT, CONTROLNET_UNTIL = 0.8, 0.8  # how hard the outlines hold, and for how much of the drawing
+# A swap holds picture 1's pose and outfit only loosely, so the new character's hair, horns and face can replace
+# the old ones: lighter outlines for the first part of the drawing, and nearly all of it redrawn.
+SWAP_CONTROLNET_WEIGHT, SWAP_CONTROLNET_UNTIL, SWAP_CONTROLNET_STRENGTH = 0.5, 0.6, 0.9
 EDIT_WORDS = re.compile(r"\b(ADD|REMOVE|AVOID|SIZE):\s*(.*?)(?=\s*\b(?:ADD|REMOVE|AVOID|SIZE):|$)")
 WEIGHTED = re.compile(r"^\((.*?)(?::[\d.]+)?\)$")
 # How much of the last picture a /refine redraws (1.0 = draw again with the same seed). Every asked-for
@@ -218,10 +224,10 @@ class Job:
     strength: float = 1.0  # share of the source picture redrawn; 1.0 when there is none
     png: bytes = None  # the finished picture, kept for /refine and /recall
     source_type: str = "image/png"
-    reference: bytes = None  # /edit's second picture: whose looks to use; RAM only, dropped once read
-    reference_type: str = "image/png"
+    references: list = None  # /edit's character pictures as (bytes, mime); RAM only, dropped once read
+    swap: bool = False  # picture 1 gets the character of the references
     recolor: bool = False  # a big area gets a new color: the old colors are faded before redrawing
-    controlnet: bool = False  # a recolor drawn along the source's outlines (SD_CONTROLNET)
+    controlnet: tuple = None  # (weight, until) when drawn along the source's outlines (SD_CONTROLNET)
 
 
 class ImageMaker:
@@ -285,15 +291,15 @@ class ImageMaker:
         del kept[:-KEEP_VERSIONS]
 
     def submit(self, request, channel_id, user_id, deliver, refine=False, progress=None, source=None,
-               source_type="image/png", reference=None, reference_type="image/png", style_channel=None):
+               source_type="image/png", references=(), style_channel=None):
         """Queue a picture. Returns how many pictures are ahead (0 = starting now), or None if
         this member already has one waiting or being drawn. Raises DrawError if there is
         nothing to refine. deliver(png, error) is awaited
         with the PNG bytes or an error text once this picture is done; progress(percent),
         if given, is awaited every 10% while ComfyUI draws it, and progress(text) with a countdown
         while Gemma writes its prompt. source: picture bytes to
-        redraw with the change (/edit), kept in RAM only; reference: a second picture whose
-        character takes over the first. channel_id keys the member's picture history; style_channel,
+        redraw with the change (/edit), kept in RAM only; references: (bytes, mime) pictures of a
+        character who takes over the first (at most MAX_REFERENCES). channel_id keys the member's picture history; style_channel,
         if given, is the channel whose drawing style to use (private pictures have their own history)."""
         style_channel = style_channel or channel_id
         if user_id in self.waiting:
@@ -312,8 +318,8 @@ class ImageMaker:
         elif not refine:
             checkpoint = self.checkpoints[style]
         self.queue.append(Job(request, channel_id, user_id, deliver, refine, checkpoint, progress, source,
-                              self.style(style_channel), source_type=source_type, reference=reference,
-                              reference_type=reference_type))
+                              self.style(style_channel), source_type=source_type,
+                              references=list(references)[:MAX_REFERENCES]))
         if not self.drawing:
             self.drawing = True  # set before any await so the bot goes silent at once
             self._worker = asyncio.create_task(self._work())
@@ -385,7 +391,8 @@ class ImageMaker:
         jobs = []
         while self.queue:
             job = self.queue.popleft()
-            images, swap = [], bool(job.reference)
+            images, swap = [], bool(job.references)
+            job.swap = swap
             if job.refine:
                 key = (job.channel_id, job.user_id)
                 old = self.versions[key][-1]
@@ -399,13 +406,13 @@ class ImageMaker:
             elif job.source:
                 # Big uploads slow Gemma down a lot; both Gemma and ComfyUI get the small copy.
                 job.source, job.source_type = await asyncio.to_thread(shrink, job.source, job.source_type)
-                job.seed, job.strength = random.randrange(2**32), SWAP_STRENGTH if job.reference else EDIT_STRENGTH
-                instruction = (SWAP_NOTE if job.reference else "") + EDITOR.format(
+                job.seed, job.strength = random.randrange(2**32), SWAP_STRENGTH if swap else EDIT_STRENGTH
+                instruction = (SWAP_NOTE if swap else "") + EDITOR.format(
                     request=job.request, style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
                 images = [(job.source, job.source_type)]
-                if job.reference:
-                    images.append(await asyncio.to_thread(shrink, job.reference, job.reference_type))
-                    job.reference = None  # only Gemma needs it; ComfyUI redraws picture 1
+                for data, mime in job.references or ():
+                    images.append(await asyncio.to_thread(shrink, data, mime))
+                job.references = None  # only Gemma needs them; ComfyUI redraws picture 1
             else:
                 job.seed = random.randrange(2**32)
                 instruction = PROMPT_WRITER.format(request=job.request,
@@ -489,9 +496,15 @@ class ImageMaker:
         try:
             for job in jobs:
                 try:
-                    if job.recolor and job.source and self.controlnet and await self._has_controlnet():
-                        job.controlnet, job.strength = True, RECOLOR_CONTROLNET_STRENGTH
+                    if job.recolor and job.source and not job.swap and self.controlnet and await self._has_controlnet():
+                        job.controlnet = (CONTROLNET_WEIGHT, CONTROLNET_UNTIL)
+                        job.strength = RECOLOR_CONTROLNET_STRENGTH
                         log.info("Recolor: following the outlines with ControlNet, redrawing %d%%", job.strength * 100)
+                    elif job.swap and self.controlnet and await self._has_controlnet():
+                        job.controlnet = (SWAP_CONTROLNET_WEIGHT, SWAP_CONTROLNET_UNTIL)
+                        job.strength = SWAP_CONTROLNET_STRENGTH
+                        log.info("Swap: loosely following picture 1's outlines with ControlNet, redrawing %d%%",
+                                 job.strength * 100)
                     if job.source and not await self._has_edit_node():
                         if not job.refine:
                             raise DrawError("Sorry, /edit needs ComfyUI restarted once. Close ComfyUI and "
@@ -573,7 +586,7 @@ class ImageMaker:
                                                             "high_threshold": 0.7}}
             flow["22"] = {"class_type": "ControlNetApplyAdvanced", "inputs": {
                 "positive": ["2", 0], "negative": ["3", 0], "control_net": ["20", 0], "image": ["21", 0],
-                "strength": CONTROLNET_WEIGHT, "start_percent": 0.0, "end_percent": CONTROLNET_UNTIL}}
+                "strength": job.controlnet[0], "start_percent": 0.0, "end_percent": job.controlnet[1]}}
             flow["5"]["inputs"]["positive"], flow["5"]["inputs"]["negative"] = ["22", 0], ["22", 1]
         return flow
 
