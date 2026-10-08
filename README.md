@@ -12,7 +12,7 @@ Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. The model g
 - `/refine changes:<text>` or `!refine <text>` - change the last picture drawn in this channel.
 - `/drawstyle style:<anime|realistic>` or `!style <anime|realistic>` - switch the drawing model for this channel.
 - `/reset` or `!reset` - forget this channel's conversation.
-- `/status` - show how busy the PC is: graphics card load and memory, CPU and RAM, with what's free (only the asker sees it). Works while pictures are being drawn.
+- `/status` - show how busy the PC is: bars for graphics card load and memory, CPU and RAM, with what's free (only the asker sees it). It refreshes about every 3 seconds for a minute, and works while pictures are being drawn.
 - The bot uses the server's own custom emoji (animated ones too) in its replies now and then, and, if `STICKERS=on` is in `.env` (off by default), once in a while sends one of the server's stickers. On startup it shows each emoji (and sticker, when on) picture to Gemma once to learn what it means (kept in RAM only), and it remembers the last 2 short messages where members used each one (RAM only, gone on restart), so it can pick one that fits the mood.
 - `/persona` - change the bot's personality in this channel: pick a `preset` (buddy, tsundere, wuxia, pirate, roast) or write your own with `custom`, or play a known character with `character` (e.g. `Ganyu Genshin Impact`): the bot searches the web for them and turns what it finds into a personality. With no options it shows the current one. Switching clears the channel's memory. Personalities live in RAM, so a restart goes back to buddy.
 

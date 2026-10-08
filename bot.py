@@ -34,6 +34,7 @@ QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again 
                  "已排队，前面还有 {ahead} 张，全部画完我才回来聊天。")
 ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
                   "你已经有一张在排队了，画完才能再点。")
+STATUS_EVERY, STATUS_UPDATES = 2.5, 20  # /status refreshes about every 3 s for a minute
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 
 
@@ -264,9 +265,17 @@ class ChatBot(discord.Client):
         @self.tree.command(name="status", description="Show how busy the bot's PC is (graphics card, CPU, RAM)")
         async def status(interaction: discord.Interaction):
             # Works while drawing too, so members can see the graphics card load.
-            stats = await asyncio.to_thread(monitor.read, 0.5)
-            await interaction.response.send_message("```\n" + "\n".join(monitor.lines(stats)) + "\n```",
-                                                    ephemeral=True)
+            async def reading():
+                stats = await asyncio.to_thread(monitor.read, 0.5)
+                return "```\n" + "\n".join(monitor.lines(stats)) + "\n```"
+
+            await interaction.response.send_message(await reading(), ephemeral=True)
+            for _ in range(STATUS_UPDATES):  # live for a while, then the last reading stays
+                await asyncio.sleep(STATUS_EVERY)
+                try:
+                    await interaction.edit_original_response(content=await reading())
+                except discord.HTTPException:  # the member dismissed it
+                    return
 
         if self.images is None:
             return

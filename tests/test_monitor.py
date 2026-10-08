@@ -34,6 +34,8 @@ def test_window_on_unless_turned_off(monkeypatch):
 
 
 async def test_status_works_while_drawing(mock_api, monkeypatch):
+    import bot as bot_module
+    monkeypatch.setattr(bot_module, "STATUS_EVERY", 0)
     monkeypatch.setattr(monitor, "read", lambda interval=None: {"gpu": (99, 15, 16), "cpu": 50, "ram": (20, 32)})
     bot = make_bot(mock_api.base_url)
     bot.drawing = lambda: True
@@ -41,6 +43,12 @@ async def test_status_works_while_drawing(mock_api, monkeypatch):
 
     async def send_message(text, ephemeral=False):
         sent.append((text, ephemeral))
-    interaction = SimpleNamespace(response=SimpleNamespace(send_message=send_message))
+    edits = []
+
+    async def edit_original_response(content):
+        edits.append(content)
+    interaction = SimpleNamespace(response=SimpleNamespace(send_message=send_message),
+                                  edit_original_response=edit_original_response)
     await bot.tree.get_command("status").callback(interaction)
+    assert len(edits) == bot_module.STATUS_UPDATES and edits[-1] == sent[0][0]
     assert sent and "GPU  ▓▓▓▓▓▓▓▓▓▓  99%" in sent[0][0] and "free 1.0 GB" in sent[0][0] and sent[0][1]
