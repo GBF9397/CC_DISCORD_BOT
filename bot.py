@@ -44,17 +44,22 @@ ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done.
                   "你已经有一张在排队了，画完才能再点。")
 STATUS_EVERY, STATUS_UPDATES = 2.5, 20  # /status refreshes about every 3 s for a minute
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
+# "/comment ..." typed as plain text: reposted under the member's name without the prefix.
+COMMENT = re.compile(r"\s*(<@!?\d+>\s*)?[/／!！]comment\b", re.IGNORECASE)
+NO_COMMENT_PERMISSION = ("I need the Manage Webhooks permission in this channel to post that. "
+                         "我在这个频道没有「管理 Webhooks」权限，请管理员给我加上。")
 # Text commands work in every channel, and also when typed with a full-width ！ or pasted as a /name line
 # (Discord sends a pasted slash command as plain text). Add new ! commands here.
 TEXT_COMMANDS = {"!ask", "!reset", "!draw", "!refine", "!recall", "!edit", "!style", "!search", "!event", "!poll",
-                 "!status"}
+                 "!status", "!comment"}
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
 POLL_USAGE = ("Write it as: !poll question | answers | @members (answers and members optional), e.g. "
               "!poll 今晚吃什么 | 炒饭，煎蛋 | @Daddy宏\n格式：!poll 问题 | 选项 | @成员（选项和成员可不写）")
-EVENT_USAGE = ("Write it as: !event name | date | time | place (| hours | details), e.g. "
-               "!event 电影夜 | 10-10 | 8:30pm | 语音频道\n格式：!event 名称 | 日期 | 时间 | 地点（| 小时 | 说明）")
+EVENT_USAGE = ("Write it as: !event name | date | time | place (| hours | details), any order as long as "
+               "the name comes before the place, e.g. !event 电影夜 | 10-10 | 8:30pm | 语音频道\n"
+               "格式：!event 名称 | 日期 | 时间 | 地点（| 小时 | 说明），顺序随意，名称写在地点前面就行")
 NO_EVENT_PERMISSION = ("I need the Create Events permission in this server to do that. "
                        "我在这个服务器没有「创建活动」权限，请管理员给我加上。")
 
@@ -110,6 +115,35 @@ def event_start(date, time, now=None):
             start = start.replace(year=now.year + 1)
         return start
     return None
+
+
+def event_hours(text):
+    """Reads 3, 1.5, 3h, 2小时 or 两个小时 / 一个半小时 as hours, or None."""
+    match = re.fullmatch(r"(\d+(?:\.\d+)?|[一二两三四五六七八九十])\s*个?\s*(半)?\s*(小时|钟头|h|hrs?|hours?)?",
+                         text.strip(), re.IGNORECASE)
+    if not match or (not match[1][0].isdigit() and not match[3]):
+        return None  # a lone Chinese numeral is more likely a name than hours
+    number = float(match[1]) if match[1][0].isdigit() else "一二三四五六七八九十".find(match[1]) + 1 or 2.0
+    return number + (0.5 if match[2] else 0)
+
+
+def event_fields(parts):
+    """Sorts !event fields given in any order into (name, date, time, place, hours, details), or None.
+    Date, time and hours are known by their look; the other fields are name, then place, then details."""
+    date = time = hours = None
+    texts = []
+    for part in filter(None, parts):
+        if date is None and event_start(part, "0:00") is not None:
+            date = part
+        elif time is None and clock_time(part) is not None:
+            time = part
+        elif hours is None and event_hours(part) is not None:
+            hours = event_hours(part)
+        else:
+            texts.append(part)
+    if not (date and time and len(texts) >= 2):
+        return None
+    return texts[0], date, time, texts[1], min(max(hours or 2.0, 0.25), 72.0), " | ".join(texts[2:])
 
 
 def lower_priority():
@@ -179,6 +213,7 @@ class EndEventButton(discord.ui.DynamicItem[discord.ui.Button],
         if interaction.user.id != self.creator:
             await interaction.response.send_message(ONLY_CREATOR, ephemeral=True)
             return
+        await interaction.response.defer()  # fetching and cancelling can take longer than Discord's 3 s
         try:
             event = await interaction.guild.fetch_scheduled_event(self.event_id)
             if event.status == discord.EventStatus.active:
@@ -187,8 +222,105 @@ class EndEventButton(discord.ui.DynamicItem[discord.ui.Button],
                 await event.cancel()
         except discord.NotFound:
             pass  # already deleted
-        await interaction.response.edit_message(view=None)
+        except discord.HTTPException as e:
+            if e.code == 180000:  # already ended or cancelled, e.g. by a second click on the same button
+                await interaction.edit_original_response(view=None)
+                return
+            log.warning("Ending an event failed: HTTP %s, code %s", e.status, e.code)
+            await interaction.followup.send(f"Discord refused to end the event (HTTP {e.status}, code {e.code}). "
+                                            "Discord 拒绝结束这个活动。", ephemeral=True)
+            return
+        await interaction.edit_original_response(view=None)
         await interaction.followup.send(f"📅 {interaction.user.display_name} ended the event 结束了活动。")
+
+
+PICK_EVENT_TIME = "Pick the date, time and length, then press Create. 选好日期、时间和时长，再点「创建」。"
+EVENT_LENGTHS = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0)
+
+
+def event_date_options(now=None):
+    """The next 25 days (Discord's most per menu) as (2026-10-10, '10-10 周六（今天）')."""
+    now = now or datetime.now().astimezone()
+    days = [now + timedelta(days=i) for i in range(25)]
+    return [(d.strftime("%Y-%m-%d"), f"{d:%m-%d} 周{'一二三四五六日'[d.weekday()]}" + ("（今天）", "（明天）", "")[min(i, 2)])
+            for i, d in enumerate(days)]
+
+
+def hour_label(hour):
+    part = "凌晨" if hour < 6 else "上午" if hour < 12 else "中午" if hour == 12 else "下午" if hour < 18 else "晚上"
+    return f"{part}{hour % 12 or 12}点 ({hour:02d}:00)"
+
+
+class EventPicker(discord.ui.View):
+    """Menus for an event's date, start and length; only its maker sees them. Defaults: today 20:00, 2 hours."""
+    def __init__(self, name, place, details):
+        super().__init__(timeout=600)
+        self.name, self.place, self.details = name, place, details
+        dates = event_date_options()
+        self.date, self.hour, self.minute, self.hours = dates[0][0], 20, 0, 2.0
+        self.menu("日期 Date", dates, "date")
+        self.menu("几点 Hour", [(h, hour_label(h)) for h in range(24)], "hour")
+        self.menu("几分 Minute", [(m, f"{m:02d} 分") for m in (0, 15, 30, 45)], "minute")
+        self.menu("时长 Length", [(h, f"{h:g} 小时 hours") for h in EVENT_LENGTHS], "hours")
+        create = discord.ui.Button(label="Create 创建", style=discord.ButtonStyle.success)
+        create.callback = self.create
+        self.add_item(create)
+
+    def menu(self, placeholder, options, field):
+        default = getattr(self, field)
+        select = discord.ui.Select(placeholder=placeholder, options=[
+            discord.SelectOption(label=label, value=str(value), default=value == default) for value, label in options])
+
+        async def chosen(interaction):
+            setattr(self, field, type(default)(select.values[0]))
+            await interaction.response.defer()
+        select.callback = chosen
+        self.add_item(select)
+
+    async def create(self, interaction):
+        await interaction.response.defer()
+        text, view = await interaction.client.create_event(
+            interaction.guild, interaction.user, self.name, self.date, f"{self.hour}:{self.minute:02d}",
+            self.place, self.hours, self.details)
+        if view is discord.utils.MISSING:  # e.g. the time has passed: say so and keep the menus
+            await interaction.followup.send(text, ephemeral=True)
+            return
+        self.stop()
+        await interaction.edit_original_response(content="✅", view=None)
+        await interaction.followup.send(text, view=view)
+
+
+class EventForm(discord.ui.Modal, title="Create an event 创建活动"):
+    """Typed parts of an event; the date and time are then picked from menus."""
+    event_name = discord.ui.TextInput(label="名称 Name", max_length=100)
+    place = discord.ui.TextInput(label="地点 Place", max_length=100)
+    details = discord.ui.TextInput(label="说明 Details (optional)", style=discord.TextStyle.paragraph,
+                                   required=False, max_length=1000)
+
+    def __init__(self, name="", place="", details=""):
+        super().__init__()
+        self.event_name.default, self.place.default, self.details.default = name or None, place or None, details or None
+
+    async def on_submit(self, interaction):
+        await interaction.response.send_message(PICK_EVENT_TIME, ephemeral=True, view=EventPicker(
+            self.event_name.value, self.place.value, self.details.value))
+
+
+class EventFormButton(discord.ui.DynamicItem[discord.ui.Button], template=r"eventform"):
+    """Under a bare !event: opens the event form, since a typed message can't open one itself."""
+    def __init__(self):
+        super().__init__(discord.ui.Button(label="📅 Create event 创建活动", style=discord.ButtonStyle.primary,
+                                           custom_id="eventform"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls()
+
+    async def callback(self, interaction):
+        if not interaction.client.allowed(interaction.user):
+            await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+            return
+        await interaction.response.send_modal(EventForm())
 
 
 def end_view(item):
@@ -204,6 +336,7 @@ class ChatBot(discord.Client):
         super().__init__(intents=intents)
         self.config = config
         self.memory = ChannelMemory()
+        self._hooks = {}  # channel id -> webhook used to repost /comment messages
         self.brain = Brain(config["base_url"], config["model"], self.memory,
                            unfiltered=config.get("unfiltered", False))
         self.tree = app_commands.CommandTree(self)
@@ -293,10 +426,13 @@ class ChatBot(discord.Client):
     async def answer(self, channel_id, user_name, text, images=(), search=False, guild=None, stickers=False):
         """Returns (reply text, sticker to send or None). Uses the server's own custom
         emoji, and on some replies (stickers=True) one of its stickers."""
-        results = ""
+        results = lore = ""
         if text and (search or needs_search(text)):
             log.info("Searching the web for a message in channel %s", channel_id)
             results = await web_search(text)
+        elif query := self.brain.lore_query(channel_id, text):
+            log.info("Character looking things up quietly in channel %s", channel_id)
+            lore = await web_search(query)
         emojis, sticker_map, labels, sticker_labels = {}, {}, [], []
         if guild is not None:
             hand = load_meanings()  # read each time so edits work without a restart
@@ -312,7 +448,7 @@ class ChatBot(discord.Client):
                             s.id, s.name, hand.get(s.name) or self.meanings.get(s.id) or s.description, s.emoji))
         reply = await self.brain.ask(channel_id, user_name, text, images, results,
                                      extras_note(labels, sticker_labels) + (DRAW_HINT if self.images else ""),
-                                     limited=not search)
+                                     limited=not search, lore=lore)
         return apply_extras(reply, emojis, sticker_map)
 
     def label(self, item_id, name, *hints):
@@ -400,7 +536,43 @@ class ChatBot(discord.Client):
                 f"🕒 <t:{int(start.timestamp())}:F>\n📍 {created.location}\n{created.url}",
                 end_view(EndEventButton(user.id, created.id)))
 
+    async def post_as(self, channel, member, text, files=()):
+        """Posts under the member's name and avatar through the channel's webhook; False if not allowed."""
+        thread = channel if isinstance(channel, discord.Thread) else discord.utils.MISSING
+        parent = channel.parent if isinstance(channel, discord.Thread) else channel
+        if not parent.permissions_for(parent.guild.me).manage_webhooks:
+            return False
+        hook = self._hooks.get(parent.id)
+        if hook is None:
+            hook = next((h for h in await parent.webhooks() if h.user and h.user.id == self.user.id), None) \
+                or await parent.create_webhook(name="Gemma comment")
+            self._hooks[parent.id] = hook
+        await hook.send(text or discord.utils.MISSING, username=member.display_name,
+                        avatar_url=member.display_avatar.url, files=list(files), thread=thread,
+                        allowed_mentions=discord.AllowedMentions.none())  # the original already pinged
+        return True
+
+    async def hide_comment(self, message, text):
+        """Swaps a '/comment ...' message for the same words under the member's name, so it reads like chat.
+        Left as it is when the bot can't delete messages or use webhooks here."""
+        if not message.channel.permissions_for(message.guild.me).manage_messages:
+            return
+        files = [await a.to_file() for a in message.attachments]  # RAM only
+        if (text or files) and await self.post_as(message.channel, message.author, text, files):
+            await message.delete()
+
     def _add_slash_commands(self):
+        @self.tree.command(name="comment", description="Talk to members only: the bot won't reply or remember it")
+        async def comment(interaction: discord.Interaction, text: str):
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if interaction.guild is None or not await self.post_as(interaction.channel, interaction.user, text):
+                await interaction.followup.send(NO_COMMENT_PERMISSION, ephemeral=True)
+                return
+            await interaction.delete_original_response()
+
         @self.tree.command(name="ask", description="Ask the bot something")
         async def ask(interaction: discord.Interaction, question: str):
             if self.drawing():
@@ -453,14 +625,17 @@ class ChatBot(discord.Client):
                 name = character.strip()[:100]
                 await interaction.response.defer(thinking=True)
                 log.info("Looking up character persona for channel %s", interaction.channel_id)
-                results = await web_search(f"{name} character personality speech style quotes")
+                # Who they are, who they know (Gemma forgets teammates otherwise) and how they fight.
+                results = "\n\n".join([await web_search(f"{name} character personality speech style quotes"),
+                                        await web_search(f"{name} teammates friends relationships story"),
+                                        await web_search(f"{name} abilities techniques explained")])
                 text = await self.brain.character_persona(name, results)
                 if text is None:
                     await interaction.followup.send(
                         f"Sorry, I couldn't find out enough about **{name}**. "
                         "Try adding the game or show, e.g. 'Ganyu Genshin Impact'.")
                     return
-                self.brain.set_persona(interaction.channel_id, text)
+                self.brain.set_persona(interaction.channel_id, text, character=name)
                 await interaction.followup.send(
                     f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
                 return
@@ -505,14 +680,17 @@ class ChatBot(discord.Client):
         @app_commands.describe(name="What the event is", date="Date, e.g. 2026-10-10 or 10-10",
                                time="Start time, e.g. 20:30, 8:30pm or 晚上8:30", place="Where it happens",
                                hours="How long it lasts (default 2 hours)", details="More about it (optional)")
-        async def event(interaction: discord.Interaction, name: str, date: str, time: str, place: str,
-                        hours: app_commands.Range[float, 0.25, 72.0] = 2.0, details: str = ""):
+        async def event(interaction: discord.Interaction, name: str = "", date: str = "", time: str = "",
+                        place: str = "", hours: app_commands.Range[float, 0.25, 72.0] = 2.0, details: str = ""):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
             if interaction.guild is None:
                 await interaction.response.send_message("Events only work in a server. 活动只能在服务器里建。",
                                                         ephemeral=True)
+                return
+            if not (name and date and time and place):  # pick the date and time from menus instead
+                await interaction.response.send_modal(EventForm(name, place, details))
                 return
             await interaction.response.defer(thinking=True)  # Discord gives up on a reply after 3 seconds
             text, view = await self.create_event(interaction.guild, interaction.user, name, date, time, place,
@@ -584,7 +762,7 @@ class ChatBot(discord.Client):
             await interaction.response.send_message(self.change_style(interaction.channel_id, style))
 
     async def setup_hook(self):
-        self.add_dynamic_items(EndPollButton, EndEventButton)
+        self.add_dynamic_items(EndPollButton, EndEventButton, EventFormButton)
         await self.tree.sync()
 
     async def on_ready(self):
@@ -619,8 +797,15 @@ class ChatBot(discord.Client):
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars, %d attachments)",
                  message.channel.id, message.author.id, len(message.content), len(message.attachments))
-        if message.author.bot or (self.drawing() and not self.is_draw_request(message.content)
-                                  and text_command(message.content)[0] != "!status"):
+        if message.author.bot:
+            return
+        if comment := COMMENT.match(message.content):
+            # Members talking among themselves: no reply, nothing remembered.
+            if message.guild is not None and self.allowed(message.author):
+                await self.hide_comment(message, message.content[comment.end():].strip())
+            return
+        if (self.drawing() and not self.is_draw_request(message.content)
+                and text_command(message.content)[0] != "!status"):
             return
         self.note_usage(message)
         if not self.allowed(message.author):
@@ -643,18 +828,15 @@ class ChatBot(discord.Client):
             await message.reply("Memory for this channel cleared.", mention_author=False)
             return
         if command == "!event" and message.guild is not None:
-            parts = [p.strip() for p in re.split(r"[|｜]", rest)]
-            if len(parts) < 4 or not all(parts[:4]):
+            if not rest:  # nothing typed: offer the form with menus
+                await message.reply("Press to create an event. 点按钮创建活动。", view=end_view(EventFormButton()),
+                                    mention_author=False)
+                return
+            fields = event_fields([p.strip() for p in re.split(r"[|｜]", rest)])
+            if fields is None:
                 await message.reply(EVENT_USAGE, mention_author=False)
                 return
-            hours = 2.0
-            if len(parts) > 4 and parts[4]:
-                try:
-                    hours = min(max(float(parts[4].rstrip("小时hH ")), 0.25), 72.0)
-                except ValueError:
-                    pass
-            text, view = await self.create_event(message.guild, message.author, *parts[:4], hours,
-                                                 " | ".join(parts[5:]))
+            text, view = await self.create_event(message.guild, message.author, *fields)
             await message.reply(text, view=view, mention_author=False)
             return
         if command == "!status":
@@ -746,7 +928,8 @@ def main():
     for name in ("httpx", "httpx2"):  # their INFO lines carry request URLs
         logging.getLogger(name).setLevel(logging.WARNING)
     for name in ("primp", "ddgs"):  # their lines carry web search queries; search.py logs failures itself
-        logging.getLogger(name).disabled = True
+        # A level, not .disabled: child loggers like "ddgs.ddgs" ignore a disabled parent.
+        logging.getLogger(name).setLevel(logging.CRITICAL + 1)
     ChatBot(config).run(config["token"], root_logger=True)
 
 

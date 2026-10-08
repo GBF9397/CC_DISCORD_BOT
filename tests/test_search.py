@@ -13,6 +13,7 @@ def fake_search(monkeypatch, results=RESULTS):
             raise results
         return results
     monkeypatch.setattr(search, "_search", _search)
+    monkeypatch.setattr(search, "_backup_search", _search)  # no real network in tests
     return calls
 
 
@@ -31,7 +32,7 @@ async def test_time_sensitive_message_gets_results_but_memory_stays_clean(mock_a
     assert calls == ["who won the match today?"]
     sent = mock_api.requests[0]["messages"][-1]["content"]
     assert "Team A won 3-1" in sent and "https://news.example/match" in sent
-    assert sent.endswith("user1: who won the match today?")
+    assert "[Message]\nuser1: who won the match today?\n\n[Length limit" in sent
     assert bot.memory.get(BOT_CHANNEL)[0] == {"role": "user", "content": "user1: who won the match today?"}
 
 
@@ -89,7 +90,9 @@ async def test_persona_character_searches_and_roleplays(mock_api, monkeypatch):
     said = []
     await bot.tree.get_command("persona").callback(character_interaction(said), None, None, "Ganyu Genshin Impact")
 
-    assert calls == ["Ganyu Genshin Impact character personality speech style quotes"]
+    assert calls == ["Ganyu Genshin Impact character personality speech style quotes",
+                     "Ganyu Genshin Impact teammates friends relationships story",
+                     "Ganyu Genshin Impact abilities techniques explained"]
     summary_request = mock_api.requests[-1]["messages"]
     assert len(summary_request) == 1 and "adeptus secretary" in summary_request[0]["content"]
     persona = bot.brain.persona(BOT_CHANNEL)
@@ -144,3 +147,13 @@ async def test_image_search_failure_gives_no_pictures(monkeypatch):
         raise RuntimeError("blocked")
     monkeypatch.setattr(search, "_images", boom)
     assert await search.image_search("claret") == []
+
+
+async def test_backup_engines_when_first_search_finds_nothing(monkeypatch):
+    def empty(query, max_results):
+        raise RuntimeError("no results")
+    monkeypatch.setattr(search, "_search", empty)
+    monkeypatch.setattr(search, "_backup_search", lambda q, n: [{"title": "泡泡", "href": "h", "body": "b"}])
+    assert "泡泡" in await search.web_search("Sunna 绝区零 宠物")
+    monkeypatch.setattr(search, "_backup_search", lambda q, n: [])
+    assert await search.web_search("nothing") == ""

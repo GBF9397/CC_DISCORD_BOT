@@ -21,17 +21,42 @@ def needs_search(text):
     return bool(_TIME_SENSITIVE.search(text))
 
 
+# Questions about facts (names, places, who, when...), for a character persona's quiet lookups.
+_FACT_QUESTION = re.compile(
+    r"\b(what|who|whose|where|which|when|how (many|much|old|long|tall))\b"
+    r"|叫什么|什么名字|是什么|是谁|谁是|哪里|哪儿|哪个|哪位|哪一|多少|几岁|几个|什么时候|为什么|怎么回事"
+    r"|认识|介绍|说说|说一下|讲讲|性格|队友|朋友|关系|宠物",
+    re.IGNORECASE,
+)
+
+
+def is_fact_question(text):
+    return bool(_FACT_QUESTION.search(text))
+
+
 def _search(query, max_results):
     return DDGS().text(query, max_results=max_results)
 
 
+# Backup when the first lookup finds nothing: other engines, with Chinese-language results.
+BACKUP_ENGINES = "bing, brave, google, yahoo, wikipedia"
+
+
+def _backup_search(query, max_results):
+    return DDGS().text(query, max_results=max_results, region="cn-zh", backend=BACKUP_ENGINES)
+
+
 async def web_search(query, max_results=5):
-    """Search results as one text block for the model, or "" if the lookup fails."""
-    try:
-        results = await asyncio.to_thread(_search, query, max_results)
-    except Exception as e:
-        log.warning("Web search failed: %s", type(e).__name__)  # the message can hold the query
-        return ""
+    """Search results as one text block for the model, or "" if the lookup fails.
+    Nothing found or an error: tries the backup engines once."""
+    results = []
+    for lookup in (_search, _backup_search):
+        try:
+            results = await asyncio.to_thread(lookup, query, max_results)
+        except Exception as e:
+            log.warning("Web search failed: %s", type(e).__name__)  # the message can hold the query
+        if results:
+            break
     return "\n\n".join(f"{r.get('title', '')}\n{r.get('href', '')}\n{r.get('body', '')}" for r in results)
 
 

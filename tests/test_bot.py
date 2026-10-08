@@ -42,7 +42,7 @@ class FakeMessage:
     async def reply(self, text=None, mention_author=True, file=None, files=None, view=None):
         self.replies.append(text if file is None else file)
         self.files = files
-        self.mentioned = mention_author
+        self.mentioned, self.view = mention_author, view
         self.sent = FakeSent()
         return self.sent
 
@@ -128,7 +128,7 @@ async def test_long_reply_is_split(mock_api, monkeypatch):
 async def test_slash_commands_registered_and_work(mock_api):
     bot = make_bot(mock_api.base_url)
     names = {c.name for c in bot.tree.get_commands()}
-    assert names == {"ask", "reset", "search", "persona", "poll", "event", "status"}
+    assert names == {"ask", "reset", "search", "persona", "poll", "event", "status", "comment"}
 
     sent = []
     async def followup_send(text):
@@ -165,7 +165,7 @@ async def test_image_attachments_are_sent_to_the_model(mock_api):
     await bot.on_message(msg)
     assert msg.replies == ["echo: user1: what is this?"]
     parts = mock_api.requests[0]["messages"][-1]["content"]
-    assert parts[0] == {"type": "text", "text": "user1: what is this?"}
+    assert parts[0]["text"].startswith("user1: what is this?\n\n[Length limit")
     assert parts[1:] == [{"type": "image_url", "image_url": {"url": "data:image/png;base64,UE5HREFUQQ=="}}]
     # Memory keeps only text, never the image bytes.
     assert bot.memory.get(BOT_CHANNEL)[0]["content"] == "user1: what is this? [sent 1 image(s)]"
@@ -305,6 +305,72 @@ async def test_learns_from_how_members_use_emoji(mock_api, monkeypatch):
     system = mock_api.requests[0]["messages"][0]["content"]
     assert 'kekw (used like "lol you lost again :kekw:")' in system
     assert 'catjam (used like "party time ' in system and '..."' in system
+
+
+async def test_comment_messages_get_no_reply_and_are_not_remembered(mock_api):
+    bot = make_bot(mock_api.base_url)
+    ch = FakeChannel(BOT_CHANNEL)
+    for text in ("/comment 你们晚上打不打", "/Comment lol", f"<@{BOT_ID}> /comment hi", "／comment 好", "!comment 好", "！comment 好"):
+        msg = FakeMessage(text, ch, mentions=[bot.user])
+        await bot.on_message(msg)
+        assert msg.replies == []
+    assert mock_api.requests == [] and bot.memory.get(BOT_CHANNEL) == []
+    msg = FakeMessage("/commentary please", ch)
+    await bot.on_message(msg)
+    assert msg.replies  # only the /comment word itself is skipped
+
+
+class FakeHook:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, text, **kwargs):
+        self.sent.append((text, kwargs["username"]))
+
+
+async def test_comment_is_reposted_without_the_command(mock_api):
+    bot = make_bot(mock_api.base_url)
+    hook = FakeHook()
+    allowed = SimpleNamespace(manage_webhooks=True, manage_messages=True)
+    ch = FakeChannel(BOT_CHANNEL)
+    ch.guild = SimpleNamespace(me=None)
+    ch.permissions_for = lambda member: allowed
+    ch.webhooks = lambda: _return([])
+    ch.create_webhook = lambda name: _return(hook)
+    msg = FakeMessage("！comment 你们晚上打不打", ch, guild=ch.guild)
+    msg.author.display_avatar = SimpleNamespace(url="https://cdn/a.png")
+    deleted = []
+    msg.delete = lambda: _return(deleted.append(True))
+    await bot.on_message(msg)
+    assert hook.sent == [("你们晚上打不打", "user1")] and deleted and msg.replies == []
+    assert mock_api.requests == [] and bot.memory.get(BOT_CHANNEL) == []
+
+    allowed.manage_messages = False  # can't delete it: the message stays as typed
+    deleted.clear()
+    await bot.on_message(msg)
+    assert len(hook.sent) == 1 and not deleted
+
+
+async def _return(value):
+    return value
+
+
+async def test_character_persona_searches_for_fact_questions(mock_api, monkeypatch):
+    import bot as bot_module
+    queries = []
+
+    async def fake_search(query):
+        queries.append(query)
+        return "Opera Epiclese"
+    monkeypatch.setattr(bot_module, "web_search", fake_search)
+    bot = make_bot(mock_api.base_url)
+    bot.brain.set_persona(BOT_CHANNEL, "Furina", character="Furina Genshin")
+    ch = FakeChannel(BOT_CHANNEL)
+    await bot.on_message(FakeMessage("what is the opera house called?", ch))
+    await bot.on_message(FakeMessage("haha nice", ch))
+    assert queries == ["Furina Genshin what is the opera house called?"]
+    assert "Opera Epiclese" in mock_api.requests[0]["messages"][-1]["content"]
+    assert "Opera Epiclese" not in mock_api.requests[1]["messages"][-1]["content"]
 
 
 async def test_bang_search_reply_has_no_length_cap(mock_api, monkeypatch):
@@ -543,3 +609,158 @@ async def test_only_the_creator_can_end_a_poll_and_gets_the_counts():
     assert not ended and response.sent[0][0].startswith("Only the person")
     await button.callback(click(5))
     assert ended and "炒饭: 2" in sent[0] and "煎蛋: 1" in sent[0]
+
+
+async def test_end_event_answers_the_click_before_cancelling():
+    from bot import EndEventButton
+    steps = []
+    event = SimpleNamespace(status=discord.EventStatus.scheduled)
+
+    async def cancel():
+        steps.append("cancel")
+    event.cancel = cancel
+
+    async def fetch(event_id):
+        steps.append("fetch")
+        return event
+
+    async def defer():
+        steps.append("defer")
+
+    async def edit_original_response(view=None):
+        steps.append("edit")
+
+    async def followup(text, ephemeral=False):
+        steps.append(text)
+    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Ep"),
+                                  guild=SimpleNamespace(fetch_scheduled_event=fetch),
+                                  response=SimpleNamespace(defer=defer),
+                                  edit_original_response=edit_original_response,
+                                  followup=SimpleNamespace(send=followup))
+    await EndEventButton(5, 9).callback(interaction)
+    # Discord gives a click only 3 s, so the bot answers before it fetches and cancels the event.
+    assert steps[:4] == ["defer", "fetch", "cancel", "edit"] and "ended the event" in steps[4]
+
+
+async def test_end_event_says_when_discord_refuses():
+    from bot import EndEventButton
+    sent = []
+
+    async def fetch(event_id):
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), {"code": 50013, "message": ""})
+
+    async def defer():
+        pass
+
+    async def followup(text, ephemeral=False):
+        sent.append((text, ephemeral))
+    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Ep"),
+                                  guild=SimpleNamespace(fetch_scheduled_event=fetch),
+                                  response=SimpleNamespace(defer=defer), followup=SimpleNamespace(send=followup))
+    await EndEventButton(5, 9).callback(interaction)
+    assert "50013" in sent[0][0] and sent[0][1]
+
+
+async def test_end_event_twice_just_removes_the_button():
+    from bot import EndEventButton
+    steps = []
+    event = SimpleNamespace(status=discord.EventStatus.scheduled)
+
+    async def cancel():  # a second click raced the first, which already cancelled it
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), {"code": 180000, "message": ""})
+    event.cancel = cancel
+
+    async def fetch(event_id):
+        return event
+
+    async def defer():
+        pass
+
+    async def edit_original_response(view=None):
+        steps.append("edit")
+
+    async def followup(text, ephemeral=False):
+        steps.append(text)
+    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Ep"),
+                                  guild=SimpleNamespace(fetch_scheduled_event=fetch),
+                                  response=SimpleNamespace(defer=defer),
+                                  edit_original_response=edit_original_response,
+                                  followup=SimpleNamespace(send=followup))
+    await EndEventButton(5, 9).callback(interaction)
+    assert steps == ["edit"]
+
+
+def test_event_fields_can_come_in_any_order():
+    from bot import event_fields
+    assert event_fields(["看电影", "10-10", "8:30pm", "两个小时", "Voice Channel"]) == \
+        ("看电影", "10-10", "8:30pm", "Voice Channel", 2.0, "")
+    assert event_fields(["晚上8点", "看电影", "3h", "语音频道", "2026-10-10", "带零食", "别迟到"]) == \
+        ("看电影", "2026-10-10", "晚上8点", "语音频道", 3.0, "带零食 | 别迟到")
+    assert event_fields(["电影夜", "10-10", "8:30pm", "语音频道", "1.5小时"])[4] == 1.5
+    assert event_fields(["电影夜", "10-10", "8:30pm", "语音频道"])[4] == 2.0  # default
+    assert event_fields(["电影夜", "10-10", "8:30pm"]) is None  # no place
+    assert event_fields(["电影夜", "语音频道", "8:30pm"]) is None  # no date
+
+
+def test_event_menus_list_25_days_and_name_the_hours():
+    from bot import event_date_options, hour_label
+    now = datetime(2026, 10, 10, 15, 0).astimezone()
+    days = event_date_options(now)
+    assert len(days) == 25 and days[0] == ("2026-10-10", "10-10 周六（今天）") and days[1][1].endswith("（明天）")
+    assert hour_label(20) == "晚上8点 (20:00)" and hour_label(0) == "凌晨12点 (00:00)" and hour_label(12) == "中午12点 (12:00)"
+
+
+async def test_bare_event_offers_a_form_button(mock_api):
+    from bot import EventFormButton
+    bot = make_bot(mock_api.base_url)
+    msg = FakeMessage("!event", FakeChannel(CHANNEL), guild=FakeGuild())
+    await bot.on_message(msg)
+    button = msg.view.children[0]
+    assert isinstance(button, EventFormButton) and button.item.custom_id == "eventform"
+
+
+async def test_slash_event_without_details_opens_the_form(mock_api):
+    from bot import EventForm
+    bot = make_bot(mock_api.base_url)
+    interaction = slash_interaction(FakeGuild())
+    opened = []
+
+    async def send_modal(modal):
+        opened.append(modal)
+    interaction.response.send_modal = send_modal
+    await bot.tree.get_command("event").callback(interaction, "电影夜", "", "", "", 2.0, "")
+    assert isinstance(opened[0], EventForm) and opened[0].event_name.default == "电影夜"
+
+
+async def test_event_picker_creates_the_event_from_the_menus(mock_api):
+    from bot import EventPicker
+    bot = make_bot(mock_api.base_url)
+    guild = FakeGuild()
+    picker = EventPicker("电影夜", "语音频道", "带零食")
+    day = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+    picker.date, picker.hour, picker.minute, picker.hours = day, 21, 30, 3.0
+    sent = []
+
+    async def defer():
+        pass
+
+    async def edit_original_response(content=None, view=None):
+        sent.append(("edit", content))
+
+    async def followup(text, view=None, ephemeral=False):
+        sent.append((text, view, ephemeral))
+    interaction = SimpleNamespace(client=bot, guild=guild, user=SimpleNamespace(id=5, display_name="Ep"),
+                                  response=SimpleNamespace(defer=defer),
+                                  edit_original_response=edit_original_response,
+                                  followup=SimpleNamespace(send=followup))
+    await picker.create(interaction)
+    made = guild.created
+    assert made["name"] == "电影夜" and made["location"] == "语音频道" and made["description"] == "带零食"
+    assert made["start_time"].strftime("%Y-%m-%d %H:%M") == f"{day} 21:30"
+    assert made["end_time"] - made["start_time"] == timedelta(hours=3)
+    assert "电影夜" in sent[-1][0] and not sent[-1][2]  # posted for everyone
+
+    picker.date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    sent.clear()
+    await picker.create(interaction)
+    assert "already passed" in sent[0][0] and sent[0][2]  # only the maker sees the problem, menus stay

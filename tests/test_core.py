@@ -105,6 +105,9 @@ def test_apply_extras_converts_emoji_and_pulls_sticker():
     assert apply_extras("我是pepe", emojis, {}) == ("我是pepe", None)
     assert apply_extras("好的：pepe：", emojis, {}) == ("好的 <:pepe:1>", None)
     assert apply_extras("好的:pepe:<a:x:2>", emojis, {}) == ("好的 <:pepe:1> <a:x:2>", None)
+    assert apply_extras("出发了！:pepe", emojis, {}) == ("出发了！ <:pepe:1>", None)  # closing colon missing
+    assert apply_extras("肉！:pepe :nope 冒险！", emojis, {}) == ("肉！ <:pepe:1> :nope 冒险！", None)
+    assert apply_extras("at 12:30 ok", emojis, {}) == ("at 12:30 ok", None)
     assert apply_extras("ok [Sticker: catjam]", emojis, stickers) == ("ok", "STICKER")
     assert apply_extras("[sticker: catjam]", emojis, stickers) == ("", "STICKER")
     assert apply_extras("[sticker: unknown]", emojis, stickers) == ("...", None)
@@ -143,9 +146,12 @@ async def test_each_reply_draws_a_length_cap_and_long_replies_are_cut(mock_api, 
     mock_api.reply = "哈哈哈哈哈哈。今天天气真好呀！你呢？"
     brain = make_brain(mock_api.base_url)
     reply = await brain.ask(1, "Ep", "hi")
-    assert reply == "哈哈哈哈哈哈。"
-    assert "at most 10 Chinese characters" in mock_api.requests[-1]["messages"][0]["content"]
-    assert brain.memory.get(1)[-1]["content"] == "哈哈哈哈哈哈。"
+    assert reply == "哈哈哈哈哈哈。今天天气真好呀！"  # cut at a sentence end within 1.5x the cap
+    sent = mock_api.requests[0]["messages"]
+    assert "Length limit" not in sent[0]["content"]  # with the newest message, not the system prompt
+    assert sent[-1]["content"].startswith("Ep: hi\n\n[Length limit for this reply: at most 10 Chinese")
+    assert brain.memory.get(1) == [{"role": "user", "content": "Ep: hi"},
+                                   {"role": "assistant", "content": "哈哈哈哈哈哈。今天天气真好呀！"}]
     assert "max_tokens" not in mock_api.requests[-1]  # reasoning needs the room
 
 
@@ -153,6 +159,48 @@ def test_shorten_counts_chinese_characters_and_english_words():
     from core import REPLY_LENGTHS, shorten
     assert REPLY_LENGTHS == (10, 30, 50, 100)
     assert shorten("short reply", 10) == "short reply"
-    assert shorten("一二三四五六七八九十十一", 10) == "一二三四五六七八九十…"
-    assert shorten("one two three. four five six seven eight nine ten eleven", 10) == "one two three. four five six seven eight nine ten…"
-    assert shorten("好的 :catcry: 我知道了，然后还有很多很多话要说", 5) == "好的 :catcry: 我知…"
+    assert shorten("一二三四五六七八九十十一", 10) == "一二三四五六七八九十十一"  # a bit over is kept whole
+    assert shorten("一二三四五六七八九十" * 2, 10) == "一二三四五六七八九十一二三四五…"
+    assert shorten("one two. three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen",
+                   10) == "one two. three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen…"
+    assert shorten("one two three four five six seven. eight nine ten eleven twelve thirteen fourteen fifteen sixteen",
+                   10) == "one two three four five six seven."
+    assert shorten("好的 :catcry: 我知道了，然后还有很多很多话要说", 6) == "好的 :catcry: 我知道了"
+    assert shorten("好的 :catcry: 我知道了然后还有很多很多话要说", 5) == "好的 :catcry: 我知道了…"
+
+
+async def test_character_persona_looks_things_up_quietly(mock_api):
+    import core
+    brain = make_brain(mock_api.base_url)
+    assert brain.lore_query(1, "枫丹的歌剧院叫什么？") is None  # not a character persona
+    brain.set_persona(1, "Furina text", character="芙宁娜 原神")
+    assert brain.lore_query(1, "枫丹的歌剧院叫什么？") == "芙宁娜 原神 枫丹的歌剧院叫什么？"
+    assert brain.lore_query(1, "") is None
+    queries = [brain.lore_query(1, "哈哈好的") for _ in range(core.LORE_EVERY * 2)]
+    refresh = "芙宁娜 原神 character personality speech style quotes"
+    assert queries.count(refresh) == 2 and set(queries) == {None, refresh}
+    brain.set_persona(1, "a grumpy cat")
+    assert brain.lore_query(1, "who are you?") is None
+
+    mock_api.reply = "I am Furina!"
+    await brain.ask(1, "Ep", "who are you?", lore="Opera Epiclese")
+    sent = mock_api.requests[-1]["messages"][-1]["content"]
+    assert "Opera Epiclese" in sent and "looked up quietly" in sent and sent.count("Ep: who are you?") == 1
+    assert "Opera Epiclese" not in str(brain.memory.get(1))
+
+
+async def test_character_persona_is_told_not_to_repeat_catchphrases(mock_api):
+    mock_api.reply = "King of Curses."
+    text = await make_brain(mock_api.base_url).character_persona("Sukuna", "results")
+    assert "never repeat a word or phrase" in text and "is Sukuna only when it clearly is" in text
+
+
+async def test_reply_over_the_cap_is_rewritten_within_it(mock_api, monkeypatch):
+    import core
+    monkeypatch.setattr(core.random, "choice", lambda options: 10)
+    mock_api.reply = ["一二三四五六七八九十" * 3, "好的，懂了。"]
+    brain = make_brain(mock_api.base_url)
+    app_reply = await brain.ask(1, "Ep", "hi")
+    assert app_reply == "好的，懂了。" and len(mock_api.requests) == 2
+    assert "at most 10 Chinese characters" in mock_api.requests[1]["messages"][-1]["content"]
+    assert brain.memory.get(1)[-1]["content"] == "好的，懂了。"
