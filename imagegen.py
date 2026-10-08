@@ -99,9 +99,9 @@ SWAP_NOTE = (
     "keep picture 1's clothes, pose, framing and background, but give the person that character's looks "
     "(hair colour and style, eye colour, face, skin, horns, ears, hair ornaments), and name the character if "
     "you know who it is. Put the character's name and series tags and every distinctive feature first, "
-    "each with weight 1.3, like (blue hair:1.3), (goat horns:1.3), (purple eyes:1.3); after AVOID: list "
-    "picture 1's own looks that must go (its hair colour and style, eye colour, ears or horns the "
-    "character doesn't have). Keep the name even though the outfit is new: the character's usual looks "
+    "each with weight 1.3, written as (<feature>:1.3), only features the character really has (no horns, "
+    "ears or tails they don't have); after AVOID: list picture 1's own looks that must go (its hair "
+    "colour and style, eye colour, ears or horns the character doesn't have).Keep the name even though the outfit is new: the character's usual looks "
     "are exactly what is wanted, so the rule about leaving names out doesn't apply, and don't write RECOLOR. "
 )
 MAX_REFERENCES = 3  # character pictures one /edit takes after the picture it redraws
