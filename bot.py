@@ -41,13 +41,26 @@ EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 COMMENT = re.compile(r"\s*(<@!?\d+>\s*)?[/／!！]comment\b", re.IGNORECASE)
 NO_COMMENT_PERMISSION = ("I need the Manage Webhooks permission in this channel to post that. "
                          "我在这个频道没有「管理 Webhooks」权限，请管理员给我加上。")
+# Text commands work in every channel, and also when typed with a full-width ！ or pasted as a /name line
+# (Discord sends a pasted slash command as plain text). Add new ! commands here.
+TEXT_COMMANDS = {"!ask", "!reset", "!draw", "!refine", "!style", "!search", "!event", "!poll", "!status",
+                 "!comment"}
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
+POLL_USAGE = ("Write it as: !poll question | answers | @members (answers and members optional), e.g. "
+              "!poll 今晚吃什么 | 炒饭，煎蛋 | @Daddy宏\n格式：!poll 问题 | 选项 | @成员（选项和成员可不写）")
 EVENT_USAGE = ("Write it as: !event name | date | time | place (| hours | details), e.g. "
                "!event 电影夜 | 10-10 | 8:30pm | 语音频道\n格式：!event 名称 | 日期 | 时间 | 地点（| 小时 | 说明）")
 NO_EVENT_PERMISSION = ("I need the Create Events permission in this server to do that. "
                        "我在这个服务器没有「创建活动」权限，请管理员给我加上。")
+
+
+def text_command(text):
+    """Returns (command, rest) when text starts with a known text command (!, ！ or /), else (None, text)."""
+    first, _, rest = text.strip().partition(" ")
+    name = "!" + first[1:].lower() if first[:1] in "!！/" else ""
+    return (name, rest.strip()) if name in TEXT_COMMANDS else (None, text)
 
 
 def poll_answers(options):
@@ -111,6 +124,76 @@ def lower_priority():
         pass
 
 
+ONLY_CREATOR = "Only the person who started this can end it. 只有发起人才能结束。"
+
+
+def vote_summary(poll):
+    """Text with each answer's current vote count."""
+    if not poll.total_votes:
+        return "No votes yet. 还没有人投票。"
+    return "\n".join(f"• {a.text}: {a.vote_count}" for a in poll.answers)
+
+
+class EndPollButton(discord.ui.DynamicItem[discord.ui.Button], template=r"endpoll:(?P<creator>\d+)"):
+    """End button under a poll; who may press it is kept in the button itself, so restarts don't matter."""
+    def __init__(self, creator):
+        super().__init__(discord.ui.Button(label="End poll 结束投票", style=discord.ButtonStyle.danger,
+                                           custom_id=f"endpoll:{creator}"))
+        self.creator = creator
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(int(match["creator"]))
+
+    async def callback(self, interaction):
+        if interaction.user.id != self.creator:
+            await interaction.response.send_message(ONLY_CREATOR, ephemeral=True)
+            return
+        message = interaction.message
+        if message.poll is None or message.poll.is_finalised():
+            await interaction.response.edit_message(view=None)
+            return
+        summary = vote_summary(message.poll)  # counts as they are now, before Discord tallies the end
+        await message.end_poll()
+        await interaction.response.edit_message(view=None)
+        await interaction.followup.send(f"🗳️ {interaction.user.display_name} ended the poll 结束了投票: "
+                                        f"**{message.poll.question}**\n{summary}")
+
+
+class EndEventButton(discord.ui.DynamicItem[discord.ui.Button],
+                     template=r"endevent:(?P<creator>\d+):(?P<event>\d+)"):
+    """End button under an event: cancels it if it hasn't started, ends it if it has."""
+    def __init__(self, creator, event_id):
+        super().__init__(discord.ui.Button(label="End event 结束活动", style=discord.ButtonStyle.danger,
+                                           custom_id=f"endevent:{creator}:{event_id}"))
+        self.creator, self.event_id = creator, event_id
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(int(match["creator"]), int(match["event"]))
+
+    async def callback(self, interaction):
+        if interaction.user.id != self.creator:
+            await interaction.response.send_message(ONLY_CREATOR, ephemeral=True)
+            return
+        try:
+            event = await interaction.guild.fetch_scheduled_event(self.event_id)
+            if event.status == discord.EventStatus.active:
+                await event.end()
+            elif event.status == discord.EventStatus.scheduled:
+                await event.cancel()
+        except discord.NotFound:
+            pass  # already deleted
+        await interaction.response.edit_message(view=None)
+        await interaction.followup.send(f"📅 {interaction.user.display_name} ended the event 结束了活动。")
+
+
+def end_view(item):
+    view = discord.ui.View(timeout=None)
+    view.add_item(item)
+    return view
+
+
 class ChatBot(discord.Client):
     def __init__(self, config):
         intents = discord.Intents.default()
@@ -143,8 +226,8 @@ class ChatBot(discord.Client):
         return self.images is not None and self.images.drawing
 
     def is_draw_request(self, content):
-        words = content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", "").split()
-        return bool(self.images) and len(words) > 1 and words[0].lower() in ("!draw", "!refine")
+        command, rest = text_command(content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", ""))
+        return bool(self.images) and bool(rest) and command in ("!draw", "!refine")
 
     def queue_picture(self, request, channel_id, user_id, refine, send, edit):
         """Queues a picture; send(text) / send(file=...) posts the result later, and
@@ -167,6 +250,19 @@ class ChatBot(discord.Client):
             return ALREADY_QUEUED
         log.info("Picture queued, %d ahead", ahead)
         return DRAWING_NOTICE if ahead == 0 else QUEUED_NOTICE.format(ahead=ahead)
+
+    async def status_text(self):
+        stats = await asyncio.to_thread(monitor.read, 0.5)
+        return "```\n" + "\n".join(monitor.lines(stats)) + "\n```"
+
+    async def keep_status_live(self, edit):
+        """Refresh a posted status for a while; the last reading then stays."""
+        for _ in range(STATUS_UPDATES):
+            await asyncio.sleep(STATUS_EVERY)
+            try:
+                await edit(await self.status_text())
+            except discord.HTTPException:  # dismissed or deleted
+                return
 
     def change_style(self, channel_id, name):
         """Text to post after a member asks to switch drawing style (empty name shows the current one)."""
@@ -247,8 +343,29 @@ class ChatBot(discord.Client):
     async def on_guild_stickers_update(self, guild, before, after):
         await self.learn_meanings(guild)
 
-    async def create_event(self, guild, user_name, name, date, time, place, hours=2.0, details=""):
-        """Creates a Discord scheduled event; returns the text to post."""
+    def make_poll(self, question, options="", members="", hours=None, multiple=False):
+        """Returns (error, message text, poll); error is set when the poll can't be made."""
+        answers = poll_answers(options)
+        if len(answers) > 10:
+            return "A poll can have at most 10 answers. 投票最多 10 个选项。", None, None
+        voters = list(dict.fromkeys(MEMBER_MENTION.findall(members)))
+        if members.strip() and not voters:
+            return "Pick members with @, e.g. @Daddy宏 @启胜. 请用 @ 选成员。", None, None
+        hours = hours or (168 if voters else 24)
+        vote = discord.Poll(question=question[:300], duration=timedelta(hours=hours), multiple=multiple)
+        for answer in answers:
+            vote.add_answer(text=answer)
+        # The voter list lives in the poll message itself, so nothing is kept and a restart loses nothing.
+        content = (POLL_VOTERS + " ".join(f"<@{v}>" for v in voters)) if voters else None
+        return None, content, vote
+
+    async def create_event(self, guild, user, name, date, time, place, hours=2.0, details=""):
+        """Creates a Discord scheduled event; returns the text to post and, on success, a view with
+        an End button only the creator can use."""
+        text = await self._create_event(guild, user, name, date, time, place, hours, details)
+        return text if isinstance(text, tuple) else (text, discord.utils.MISSING)
+
+    async def _create_event(self, guild, user, name, date, time, place, hours, details):
         start = event_start(date, time)
         if start is None:
             return ("I can't read that date or time. Use e.g. date 2026-10-10 and time 20:30 or 8:30pm. "
@@ -266,8 +383,9 @@ class ChatBot(discord.Client):
         except discord.HTTPException as e:
             log.warning("Creating an event failed: HTTP %s, code %s", e.status, e.code)
             return f"Discord refused the event (HTTP {e.status}, code {e.code}). Discord 拒绝了这个活动。"
-        return (f"📅 {user_name} created an event 建了一个活动: **{created.name}**\n"
-                f"🕒 <t:{int(start.timestamp())}:F>\n📍 {created.location}\n{created.url}")
+        return (f"📅 {user.display_name} created an event 建了一个活动: **{created.name}**\n"
+                f"🕒 <t:{int(start.timestamp())}:F>\n📍 {created.location}\n{created.url}",
+                end_view(EndEventButton(user.id, created.id)))
 
     async def post_as(self, channel, member, text, files=()):
         """Posts under the member's name and avatar through the channel's webhook; False if not allowed."""
@@ -388,46 +506,26 @@ class ChatBot(discord.Client):
         @self.tree.command(name="status", description="Show how busy the bot's PC is (graphics card, CPU, RAM)")
         async def status(interaction: discord.Interaction):
             # Works while drawing too, so members can see the graphics card load.
-            async def reading():
-                stats = await asyncio.to_thread(monitor.read, 0.5)
-                return "```\n" + "\n".join(monitor.lines(stats)) + "\n```"
-
-            await interaction.response.send_message(await reading(), ephemeral=True)
-            for _ in range(STATUS_UPDATES):  # live for a while, then the last reading stays
-                await asyncio.sleep(STATUS_EVERY)
-                try:
-                    await interaction.edit_original_response(content=await reading())
-                except discord.HTTPException:  # the member dismissed it
-                    return
+            await interaction.response.send_message(await self.status_text(), ephemeral=True)
+            await self.keep_status_live(lambda text: interaction.edit_original_response(content=text))
 
         @self.tree.command(name="poll", description="Start a poll members vote on")
         @app_commands.describe(question="What to vote on",
                                options="Answers split by | , or /, e.g. '是 | 不是'; leave empty for yes/no",
                                members="Who votes, e.g. '@Daddy宏 @启胜': the poll ends once they all have",
-                               hours="How long it stays open (1-768 hours; default 24, or 768 = 32 days when members are named)",
+                               hours="How long it stays open (1-768 hours; default 24, or 168 = 7 days when members are named)",
                                multiple="Let members pick more than one answer")
         async def poll(interaction: discord.Interaction, question: str, options: str = "", members: str = "",
                        hours: app_commands.Range[int, 1, 768] = None, multiple: bool = False):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
-            answers = poll_answers(options)
-            if len(answers) > 10:
-                await interaction.response.send_message(
-                    "A poll can have at most 10 answers. 投票最多 10 个选项。", ephemeral=True)
+            error, content, vote = self.make_poll(question, options, members, hours, multiple)
+            if error:
+                await interaction.response.send_message(error, ephemeral=True)
                 return
-            voters = list(dict.fromkeys(MEMBER_MENTION.findall(members)))
-            if members.strip() and not voters:
-                await interaction.response.send_message(
-                    "Pick members with @, e.g. @Daddy宏 @启胜. 请用 @ 选成员。", ephemeral=True)
-                return
-            hours = hours or (768 if voters else 24)
-            vote = discord.Poll(question=question[:300], duration=timedelta(hours=hours), multiple=multiple)
-            for answer in answers:
-                vote.add_answer(text=answer)
-            # The voter list lives in the poll message itself, so nothing is kept and a restart loses nothing.
-            content = (POLL_VOTERS + " ".join(f"<@{v}>" for v in voters)) if voters else None
-            await interaction.response.send_message(content, poll=vote)
+            await interaction.response.send_message(content, poll=vote,
+                                                    view=end_view(EndPollButton(interaction.user.id)))
 
         @self.tree.command(name="event", description="Create a server event with a date, time and place")
         @app_commands.describe(name="What the event is", date="Date, e.g. 2026-10-10 or 10-10",
@@ -443,8 +541,9 @@ class ChatBot(discord.Client):
                                                         ephemeral=True)
                 return
             await interaction.response.defer(thinking=True)  # Discord gives up on a reply after 3 seconds
-            await interaction.followup.send(await self.create_event(
-                interaction.guild, interaction.user.display_name, name, date, time, place, hours, details))
+            text, view = await self.create_event(interaction.guild, interaction.user, name, date, time, place,
+                                                 hours, details)
+            await interaction.followup.send(text, view=view)
 
         if self.images is None:
             return
@@ -489,6 +588,7 @@ class ChatBot(discord.Client):
             await interaction.response.send_message(self.change_style(interaction.channel_id, style))
 
     async def setup_hook(self):
+        self.add_dynamic_items(EndPollButton, EndEventButton)
         await self.tree.sync()
 
     async def on_ready(self):
@@ -530,22 +630,31 @@ class ChatBot(discord.Client):
             if message.guild is not None and self.allowed(message.author):
                 await self.hide_comment(message, message.content[comment.end():].strip())
             return
-        if self.drawing() and not self.is_draw_request(message.content):
+        if (self.drawing() and not self.is_draw_request(message.content)
+                and text_command(message.content)[0] != "!status"):
             return
         self.note_usage(message)
         if not self.allowed(message.author):
             return
         text = message.content.strip()
 
-        if text == "!reset":
+        for tag in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
+            text = text.replace(tag, "")
+        command, rest = text_command(text)
+        if command:
+            text = f"{command} {rest}".strip()  # one spelling for everything below
+        mentioned = self.user in message.mentions
+        in_bot_channel = message.channel.id in self.config["channel_ids"]
+        if not (command or mentioned or in_bot_channel):
+            return  # outside the bot channels only text commands and @mentions are answered
+        text = text.strip()
+
+        if command == "!reset":
             self.memory.reset(message.channel.id)
             await message.reply("Memory for this channel cleared.", mention_author=False)
             return
-
-        if text.startswith("！event"):  # full-width ！ from a Chinese keyboard
-            text = "!" + text[1:]
-        if text.split(" ", 1)[0].lower() == "!event" and message.guild is not None:  # works in any channel
-            parts = [p.strip() for p in re.split(r"[|｜]", text[len("!event"):])]
+        if command == "!event" and message.guild is not None:
+            parts = [p.strip() for p in re.split(r"[|｜]", rest)]
             if len(parts) < 4 or not all(parts[:4]):
                 await message.reply(EVENT_USAGE, mention_author=False)
                 return
@@ -555,18 +664,28 @@ class ChatBot(discord.Client):
                     hours = min(max(float(parts[4].rstrip("小时hH ")), 0.25), 72.0)
                 except ValueError:
                     pass
-            await message.reply(await self.create_event(message.guild, message.author.display_name,
-                                                        *parts[:4], hours, " | ".join(parts[5:])),
-                                mention_author=False)
+            text, view = await self.create_event(message.guild, message.author, *parts[:4], hours,
+                                                 " | ".join(parts[5:]))
+            await message.reply(text, view=view, mention_author=False)
             return
-        mentioned = self.user in message.mentions
-        in_bot_channel = message.channel.id in self.config["channel_ids"]
-        if not (mentioned or in_bot_channel):
+        if command == "!status":
+            sent = await message.reply(await self.status_text(), mention_author=False)
+            await self.keep_status_live(lambda text: sent.edit(content=text))
             return
-
-        for tag in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
-            text = text.replace(tag, "")
-        text = text.strip()
+        if command == "!poll":
+            # !poll question | answers | @members  (answers and members optional)
+            parts = [p.strip() for p in re.split(r"[|｜]", rest, maxsplit=2)] + ["", ""]
+            if not parts[0]:
+                await message.reply(POLL_USAGE, mention_author=False)
+                return
+            error, content, vote = self.make_poll(parts[0], parts[1], parts[2])
+            if error:
+                await message.reply(error, mention_author=False)
+            else:
+                await message.channel.send(content, poll=vote, view=end_view(EndPollButton(message.author.id)))
+            return
+        if command == "!ask":
+            text = rest  # a plain question, answered like any chat message
         command = text.split(" ", 1)[0].lower()
         if self.images and command == "!style":
             await message.reply(self.change_style(message.channel.id, text[len(command):]),

@@ -52,3 +52,16 @@ async def test_status_works_while_drawing(mock_api, monkeypatch):
     await bot.tree.get_command("status").callback(interaction)
     assert len(edits) == bot_module.STATUS_UPDATES and edits[-1] == sent[0][0]
     assert sent and "GPU  ▓▓▓▓▓▓▓▓▓▓  99%" in sent[0][0] and "free 1.0 GB" in sent[0][0] and sent[0][1]
+
+
+async def test_text_status_works_while_drawing(mock_api, monkeypatch):
+    import bot as bot_module
+    from tests.test_bot import FakeChannel, FakeMessage, CHANNEL
+    monkeypatch.setattr(bot_module, "STATUS_EVERY", 0)
+    monkeypatch.setattr(monitor, "read", lambda interval=None: {"gpu": (99, 15, 16), "cpu": 50, "ram": (20, 32)})
+    bot = make_bot(mock_api.base_url)
+    bot.drawing = lambda: True
+    msg = FakeMessage("！status", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert "GPU  ▓▓▓▓▓▓▓▓▓▓  99%" in msg.replies[0]
+    assert len(msg.sent.edits) == bot_module.STATUS_UPDATES

@@ -39,7 +39,7 @@ class FakeMessage:
         self.mentions = list(mentions)
         self.replies = []
 
-    async def reply(self, text=None, mention_author=True, file=None):
+    async def reply(self, text=None, mention_author=True, file=None, view=None):
         self.replies.append(text if file is None else file)
         self.mentioned = mention_author
         self.sent = FakeSent()
@@ -390,7 +390,7 @@ class FakeResponse:
     def __init__(self):
         self.sent = []
 
-    async def send_message(self, content=None, ephemeral=False, poll=None):
+    async def send_message(self, content=None, ephemeral=False, poll=None, view=None):
         self.sent.append((content, ephemeral, poll))
 
 
@@ -400,7 +400,7 @@ def slash_interaction(guild=None):
     async def defer(thinking=False):
         pass
 
-    async def followup(content=None):
+    async def followup(content=None, view=None):
         response.sent.append((content, False, None))
     response.defer = defer
     return SimpleNamespace(user=SimpleNamespace(id=5, display_name="member"), channel_id=CHANNEL,
@@ -453,7 +453,7 @@ class FakeGuild:
         if self.forbidden:
             raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "Missing Permissions")
         self.created = kwargs
-        return SimpleNamespace(name=kwargs["name"], location=kwargs["location"], url="https://discord.com/events/1/2")
+        return SimpleNamespace(id=7, name=kwargs["name"], location=kwargs["location"], url="https://discord.com/events/1/2")
 
 
 async def test_event_command_creates_an_external_event(mock_api):
@@ -486,7 +486,7 @@ async def test_poll_with_members_names_them_and_ends_once_they_all_voted(mock_ap
     interaction = slash_interaction()
     await bot.tree.get_command("poll").callback(interaction, "q", "", "<@11> <@!12> <@11>", None, False)
     content, _, vote = interaction.response.sent[0]
-    assert content == POLL_VOTERS + "<@11> <@12>" and vote.duration == timedelta(hours=768)
+    assert content == POLL_VOTERS + "<@11> <@12>" and vote.duration == timedelta(hours=168)
 
     interaction = slash_interaction()
     await bot.tree.get_command("poll").callback(interaction, "q", "", "Daddy宏", 768, False)
@@ -531,7 +531,7 @@ async def test_bang_event_creates_an_event_from_one_line(mock_api):
     bot = make_bot(mock_api.base_url)
     guild = FakeGuild()
     date = (datetime.now() + timedelta(days=3)).strftime("%m-%d")
-    msg = FakeMessage(f"!event 电影夜 | {date} | 8:30pm | 语音频道 | 3", FakeChannel(CHANNEL), guild=guild)
+    msg = FakeMessage(f"/event 电影夜 | {date} | 8:30pm | 语音频道 | 3", FakeChannel(CHANNEL), guild=guild)
     await bot.on_message(msg)
     assert guild.created["name"] == "电影夜" and guild.created["location"] == "语音频道"
     assert guild.created["start_time"].strftime("%H:%M") == "20:30"
@@ -541,3 +541,70 @@ async def test_bang_event_creates_an_event_from_one_line(mock_api):
     msg = FakeMessage("！event 电影夜 10-10 8:30pm", FakeChannel(CHANNEL), guild=FakeGuild())
     await bot.on_message(msg)
     assert msg.replies[0].startswith("Write it as")
+
+
+def test_text_command_accepts_bang_fullwidth_and_pasted_slash():
+    from bot import text_command
+    assert text_command("!draw a cat") == ("!draw", "a cat")
+    assert text_command("！Search 天气") == ("!search", "天气")
+    assert text_command("/refine make it night") == ("!refine", "make it night")
+    assert text_command("/shrug hello") == (None, "/shrug hello")
+    assert text_command("hello") == (None, "hello")
+
+
+async def test_text_commands_work_outside_bot_channels(mock_api):
+    bot = make_bot(mock_api.base_url)
+    msg = FakeMessage("／ask hi", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies == []  # unknown prefix: ignored outside bot channels
+    msg = FakeMessage("/ask hi there", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies == ["echo: user1: hi there"]
+    msg = FakeMessage("！reset", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies == ["Memory for this channel cleared."]
+
+
+async def test_bang_poll_posts_a_poll_from_one_line(mock_api):
+    bot = make_bot(mock_api.base_url)
+    sent = []
+    ch = FakeChannel(CHANNEL)
+
+    async def send(content=None, poll=None, view=None):
+        sent.append((content, poll))
+    ch.send = send
+    await bot.on_message(FakeMessage("!poll 今晚吃什么 | 炒饭，煎蛋 | <@11>", ch))
+    content, vote = sent[0]
+    assert vote.question == "今晚吃什么" and [a.text for a in vote.answers] == ["炒饭", "煎蛋"]
+    assert content == POLL_VOTERS + "<@11>"
+    msg = FakeMessage("!poll", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies[0].startswith("Write it as")
+
+
+async def test_only_the_creator_can_end_a_poll_and_gets_the_counts():
+    from bot import EndPollButton
+    ended, sent = [], []
+    answers = [SimpleNamespace(text="炒饭", vote_count=2), SimpleNamespace(text="煎蛋", vote_count=1)]
+    poll = SimpleNamespace(question="今晚吃什么", answers=answers, total_votes=3, is_finalised=lambda: False)
+
+    async def end_poll():
+        ended.append(True)
+    response = FakeResponse()
+
+    async def edit_message(view=None):
+        pass
+    response.edit_message = edit_message
+
+    async def followup(text):
+        sent.append(text)
+    def click(user_id):
+        return SimpleNamespace(user=SimpleNamespace(id=user_id, display_name="Ep"), response=response,
+                               message=SimpleNamespace(poll=poll, end_poll=end_poll),
+                               followup=SimpleNamespace(send=followup))
+
+    button = EndPollButton(5)
+    await button.callback(click(6))
+    assert not ended and response.sent[0][0].startswith("Only the person")
+    await button.callback(click(5))
+    assert ended and "炒饭: 2" in sent[0] and "煎蛋: 1" in sent[0]
