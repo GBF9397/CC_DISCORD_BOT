@@ -68,7 +68,8 @@ CHARACTER_MAX_CHARS = 1500
 CHARACTER_STYLE = (
     " Catchphrases and signature words are seasoning: use one only now and then, and "
     "never repeat a word or phrase from your last few replies; answer what was actually "
-    "said or shown, in fresh words. Don't guess who the people in a picture are: say one "
+    "said or shown, in fresh words. Talk in the member's language: no romanized foreign "
+    "words like mousou, write 妄想. Don't guess who the people in a picture are: say one "
     "is {name} only when it clearly is (face, marks, outfit), and when you can't tell, "
     "react to what is happening in it without naming anyone. Never mock {name}."
 )
@@ -84,10 +85,11 @@ LORE_NOTE = (
 
 CHARACTER_PROMPT = (
     "Write a roleplay brief so an actor can play {name}. Use the web results below and "
-    "what you know. Cover in under 200 words: who they are and where they come from (game, "
-    "anime, book...), personality, how they talk (tone, catchphrases, how they address "
-    "people, the language they speak), and a few key relationships or facts. Write it as "
-    "notes, no intro. If you don't recognise the character, reply only with UNKNOWN.\n\n"
+    "prefer them over what you remember, since you often mix characters up. Cover in under "
+    "250 words: who they are and where they come from (game, anime, book...), personality, "
+    "how they talk (tone, how they address people), their teammates, friends, rivals and "
+    "family by name with one line each, and a few key facts. Write catchphrases and "
+    "foreign words in Chinese (e.g. 妄想, not mousou). Write it as notes, no intro. If you don't recognise the character, reply only with UNKNOWN.\n\n"
     "[Web results]\n{results}"
 )
 

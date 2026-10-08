@@ -89,7 +89,8 @@ async def test_persona_character_searches_and_roleplays(mock_api, monkeypatch):
     said = []
     await bot.tree.get_command("persona").callback(character_interaction(said), None, None, "Ganyu Genshin Impact")
 
-    assert calls == ["Ganyu Genshin Impact character personality speech style quotes"]
+    assert calls == ["Ganyu Genshin Impact character personality speech style quotes",
+                     "Ganyu Genshin Impact teammates friends relationships story"]
     summary_request = mock_api.requests[-1]["messages"]
     assert len(summary_request) == 1 and "adeptus secretary" in summary_request[0]["content"]
     persona = bot.brain.persona(BOT_CHANNEL)

@@ -240,7 +240,9 @@ class ChatBot(discord.Client):
                 name = character.strip()[:100]
                 await interaction.response.defer(thinking=True)
                 log.info("Looking up character persona for channel %s", interaction.channel_id)
-                results = await web_search(f"{name} character personality speech style quotes")
+                # Two lookups: who they are, and who they know (Gemma forgets teammates otherwise).
+                results = "\n\n".join([await web_search(f"{name} character personality speech style quotes"),
+                                        await web_search(f"{name} teammates friends relationships story")])
                 text = await self.brain.character_persona(name, results)
                 if text is None:
                     await interaction.followup.send(
