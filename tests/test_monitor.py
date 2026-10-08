@@ -20,8 +20,8 @@ def test_gpu_missing_is_none(monkeypatch):
 
 def test_lines_show_use_and_free():
     out = monitor.lines({"gpu": (42.0, 9.5, 16.0), "cpu": 23.4, "ram": (14.0, 32.0)})
-    assert out == ["GPU  42%", "VRAM 9.5 / 16.0 GB  (free 6.5 GB)", "CPU  23%",
-                   "RAM  14.0 / 32.0 GB  (free 18.0 GB)"]
+    assert out == ["GPU  ▓▓▓▓░░░░░░  42%", "VRAM ▓▓▓▓▓▓░░░░  59%  9.5 / 16.0 GB  (free 6.5 GB)",
+                   "CPU  ▓▓░░░░░░░░  23%", "RAM  ▓▓▓▓░░░░░░  44%  14.0 / 32.0 GB  (free 18.0 GB)"]
     assert monitor.lines({"gpu": None, "cpu": 5, "ram": (1, 2)})[0] == "GPU  n/a"
 
 
@@ -43,4 +43,4 @@ async def test_status_works_while_drawing(mock_api, monkeypatch):
         sent.append((text, ephemeral))
     interaction = SimpleNamespace(response=SimpleNamespace(send_message=send_message))
     await bot.tree.get_command("status").callback(interaction)
-    assert sent and "GPU  99%" in sent[0][0] and "free 1.0 GB" in sent[0][0] and sent[0][1]
+    assert sent and "GPU  ▓▓▓▓▓▓▓▓▓▓  99%" in sent[0][0] and "free 1.0 GB" in sent[0][0] and sent[0][1]

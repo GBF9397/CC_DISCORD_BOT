@@ -32,37 +32,63 @@ def read(cpu_interval=None):
             "ram": (ram.used / GB, ram.total / GB)}
 
 
-def lines(stats):
-    """The readings as short lines: use and what's free."""
+def rows(stats):
+    """(name, % used, used/total text) per reading."""
     out = []
     if stats["gpu"]:
         load, used, total = stats["gpu"]
-        out.append(f"GPU  {load:.0f}%")
-        out.append(f"VRAM {used:.1f} / {total:.1f} GB  (free {total - used:.1f} GB)")
-    else:
-        out.append("GPU  n/a")
-    out.append(f"CPU  {stats['cpu']:.0f}%")
+        out.append(("GPU", load, ""))
+        out.append(("VRAM", 100 * used / total, f"{used:.1f} / {total:.1f} GB  (free {total - used:.1f} GB)"))
+    out.append(("CPU", stats["cpu"], ""))
     used, total = stats["ram"]
-    out.append(f"RAM  {used:.1f} / {total:.1f} GB  (free {total - used:.1f} GB)")
+    out.append(("RAM", 100 * used / total, f"{used:.1f} / {total:.1f} GB  (free {total - used:.1f} GB)"))
     return out
+
+
+def lines(stats):
+    """The readings as short lines with a text bar, for Discord."""
+    out = [] if stats["gpu"] else ["GPU  n/a"]
+    for name, percent, detail in rows(stats):
+        filled = round(percent / 10)
+        out.append(f"{name:<4} {'▓' * filled}{'░' * (10 - filled)} {percent:3.0f}%  {detail}".rstrip())
+    return out
+
+
+def color(percent):
+    return "#3cb371" if percent < 60 else "#f0a030" if percent < 85 else "#e04040"
 
 
 def _window(bot_pid):
     import tkinter as tk  # here, so the bot and tests run without Tk
 
+    BAR_W, BAR_H = 220, 16
     root = tk.Tk()
     root.title("Gemma bot monitor")
     root.attributes("-topmost", True)
     root.resizable(False, False)
-    text = tk.Label(root, font=("Consolas", 11), justify="left", padx=12, pady=8)
-    text.pack()
+    font = ("Consolas", 11)
+    widgets = []  # (name label, bar canvas, text label) per row, made on first tick
     read()  # first CPU reading primes the counter
 
     def tick():
         if not psutil.pid_exists(bot_pid):  # the bot stopped or crashed
             root.destroy()
             return
-        text.config(text="\n".join(lines(read())))
+        current = rows(read())
+        while len(widgets) < len(current):
+            r = len(widgets)
+            name = tk.Label(root, font=font, anchor="w", width=5)
+            bar = tk.Canvas(root, width=BAR_W, height=BAR_H, bg="#d0d0d0", highlightthickness=0)
+            text = tk.Label(root, font=font, anchor="w")
+            name.grid(row=r, column=0, padx=(10, 4), pady=3)
+            bar.grid(row=r, column=1, pady=3)
+            text.grid(row=r, column=2, padx=(6, 10), pady=3, sticky="w")
+            widgets.append((name, bar, text))
+        for (name, percent, detail), (name_w, bar, text) in zip(current, widgets):
+            name_w.config(text=name)
+            bar.delete("all")
+            bar.create_rectangle(0, 0, BAR_W * min(percent, 100) / 100, BAR_H, fill=color(percent), width=0)
+            text.config(text=f"{percent:3.0f}%  {detail}".rstrip())
         root.after(1000, tick)
 
     tick()
