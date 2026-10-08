@@ -23,6 +23,7 @@ class MockComfy:
         self.events, self.delay, self.jobs, self.sockets = events, delay, [], {}
         self.fail = False
         self.has_edit_node = True
+        self.controlnets = ["controlnet-canny-sdxl.safetensors"]  # files in ComfyUI/models/controlnet
 
     async def ws(self, request):
         ws = web.WebSocketResponse()
@@ -59,6 +60,8 @@ class MockComfy:
 
     async def object_info(self, request):
         node = request.match_info["node"]
+        if node == "ControlNetLoader":
+            return web.json_response({node: {"input": {"required": {"control_net_name": [self.controlnets]}}}})
         return web.json_response({node: {}} if self.has_edit_node else {})
 
     async def free(self, request):
@@ -872,3 +875,41 @@ async def test_swap_keeps_the_character_name_and_colors(mock_api, comfy, events)
     assert job["5"]["inputs"]["denoise"] == 0.75 and "ganyu (genshin impact)" in job["2"]["inputs"]["text"]
     sent = base64.b64decode(job["8"]["inputs"]["image"])
     assert _colorfulness(sent) == _colorfulness(base)  # not faded: a swap worked well without it
+
+
+async def test_recolor_locks_the_shapes_with_controlnet_when_set(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    bot.images.controlnet = "controlnet-canny-sdxl.safetensors"
+    mock_api.reply = "1girl, (red hair:1.3), horns AVOID: blue hair SIZE: big RECOLOR"
+    msg = FakeMessage("!edit 把头发改成红色", FakeChannel(BOT_CHANNEL),
+                      attachments=[FakeAttachment(_picture((40, 90, 230)), "image/png")])
+    await bot.on_message(msg)
+    await finish(bot)
+    job = comfy.jobs[0]
+    assert job["20"] == {"class_type": "ControlNetLoader", "inputs": {"control_net_name": "controlnet-canny-sdxl.safetensors"}}
+    assert job["21"]["class_type"] == "Canny" and job["21"]["inputs"]["image"] == ["8", 0]  # outlines of the upload
+    assert job["22"]["class_type"] == "ControlNetApplyAdvanced" and job["22"]["inputs"]["control_net"] == ["20", 0]
+    assert job["5"]["inputs"]["positive"] == ["22", 0] and job["5"]["inputs"]["negative"] == ["22", 1]
+    assert job["5"]["inputs"]["denoise"] == 0.9  # the outlines hold the shapes, so the colour can change freely
+    mock_api.reply = "ADD: smile SIZE: small"
+    await bot.on_message(FakeMessage("!refine smile", FakeChannel(BOT_CHANNEL)))
+    await finish(bot)
+    assert "20" not in comfy.jobs[1]  # only recolors use it
+
+
+async def test_recolor_without_the_controlnet_file_falls_back(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    bot.images.controlnet = "wrong-name.safetensors"
+    mock_api.reply = "1girl, (red hair:1.3) AVOID: blue hair SIZE: big RECOLOR"
+    msg = FakeMessage("!edit 把头发改成红色", FakeChannel(BOT_CHANNEL),
+                      attachments=[FakeAttachment(_picture((40, 90, 230)), "image/png")])
+    await bot.on_message(msg)
+    await finish(bot)
+    job = comfy.jobs[0]
+    assert "20" not in job and job["5"]["inputs"]["denoise"] == 0.6 and msg.replies[1].filename == "image.png"
+
+
+def test_sd_controlnet_is_read_from_env(monkeypatch):
+    import core
+    monkeypatch.setenv("SD_CONTROLNET", " controlnet-canny-sdxl.safetensors ")
+    assert core.load_config()["sd_controlnet"] == "controlnet-canny-sdxl.safetensors"

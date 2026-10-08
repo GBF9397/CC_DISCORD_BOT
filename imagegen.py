@@ -175,6 +175,10 @@ RECOLOR_WORD = re.compile(r"\s*\bRECOLOR\b")
 KEEP_COLOR = 0.35  # share of the old colors left in a picture before a recolor
 # Fading already frees the color, so a recolor redraws less and the shapes (horns, pose) stay.
 RECOLOR_STRENGTH = 0.6
+# With SD_CONTROLNET (a canny ControlNet in ComfyUI/models/controlnet), a recolor follows the picture's
+# outlines instead: the shapes are locked, so it can redraw nearly all of it and the new colour wins.
+RECOLOR_CONTROLNET_STRENGTH = 0.9
+CONTROLNET_WEIGHT, CONTROLNET_UNTIL = 0.8, 0.8  # how hard the outlines hold, and for how much of the drawing
 EDIT_WORDS = re.compile(r"\b(ADD|REMOVE|AVOID|SIZE):\s*(.*?)(?=\s*\b(?:ADD|REMOVE|AVOID|SIZE):|$)")
 WEIGHTED = re.compile(r"^\((.*?)(?::[\d.]+)?\)$")
 # How much of the last picture a /refine redraws (1.0 = draw again with the same seed). Every asked-for
@@ -231,14 +235,16 @@ class Job:
     reference: bytes = None  # /edit's second picture: whose looks to use; RAM only, dropped once read
     reference_type: str = "image/png"
     recolor: bool = False  # a big area gets a new color: the old colors are faded before redrawing
+    controlnet: bool = False  # a recolor drawn along the source's outlines (SD_CONTROLNET)
 
 
 class ImageMaker:
     def __init__(self, brain, comfy_url, checkpoints, size=1024, context_length=16384,
-                 timeout=600, comfy_dir="", startup_wait=180):
+                 timeout=600, comfy_dir="", startup_wait=180, controlnet=""):
         self.brain = brain
         self.comfy_url = comfy_url.rstrip("/")
         self.checkpoints = checkpoints  # style -> checkpoint file; the first is the default
+        self.controlnet = controlnet  # ControlNet model file for recolors, "" = none
         self.size = size
         self.context_length = context_length
         self.timeout = timeout
@@ -496,6 +502,9 @@ class ImageMaker:
         try:
             for job in jobs:
                 try:
+                    if job.recolor and job.source and self.controlnet and await self._has_controlnet():
+                        job.controlnet, job.strength = True, RECOLOR_CONTROLNET_STRENGTH
+                        log.info("Recolor: following the outlines with ControlNet, redrawing %d%%", job.strength * 100)
                     if job.source and not await self._has_edit_node():
                         if not job.refine:
                             raise DrawError("Sorry, /edit needs ComfyUI restarted once. Close ComfyUI and "
@@ -571,6 +580,14 @@ class ImageMaker:
                 "image": base64.b64encode(job.source).decode(), "size": self.size}}
             flow["4"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["8", 0], "vae": ["1", 2]}}
             flow["5"]["inputs"]["denoise"] = job.strength
+        if job.controlnet:  # the upload's outlines hold the shapes while the colours are redrawn
+            flow["20"] = {"class_type": "ControlNetLoader", "inputs": {"control_net_name": self.controlnet}}
+            flow["21"] = {"class_type": "Canny", "inputs": {"image": ["8", 0], "low_threshold": 0.3,
+                                                            "high_threshold": 0.7}}
+            flow["22"] = {"class_type": "ControlNetApplyAdvanced", "inputs": {
+                "positive": ["2", 0], "negative": ["3", 0], "control_net": ["20", 0], "image": ["21", 0],
+                "strength": CONTROLNET_WEIGHT, "start_percent": 0.0, "end_percent": CONTROLNET_UNTIL}}
+            flow["5"]["inputs"]["positive"], flow["5"]["inputs"]["negative"] = ["22", 0], ["22", 1]
         return flow
 
     async def _comfy(self, job, progress=None):
@@ -677,6 +694,21 @@ class ImageMaker:
                     return r.status == 200 and EDIT_NODE in await r.json(content_type=None)
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
             return False
+
+    async def _has_controlnet(self):
+        """True if ComfyUI lists SD_CONTROLNET among its ControlNet models; otherwise recolors go without it."""
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.get(f"{self.comfy_url}/object_info/ControlNetLoader",
+                                    timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    info = await r.json(content_type=None) if r.status == 200 else {}
+            names = info["ControlNetLoader"]["input"]["required"]["control_net_name"][0]
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, KeyError, IndexError, TypeError):
+            names = []
+        if self.controlnet not in names:
+            log.warning("SD_CONTROLNET %s is not in ComfyUI/models/controlnet; recoloring without it",
+                        self.controlnet)
+        return self.controlnet in names
 
     async def _free_comfy(self):
         """Ask ComfyUI to drop its model from the GPU and forget the job's prompt. Never raises."""

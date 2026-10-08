@@ -439,6 +439,7 @@ def load_config():
         "comfyui_dir": os.getenv("COMFYUI_DIR", "").strip(),
         "sd_checkpoint": os.getenv("SD_CHECKPOINT", "").strip(),
         "sd_checkpoint_realistic": os.getenv("SD_CHECKPOINT_REALISTIC", "").strip(),
+        "sd_controlnet": os.getenv("SD_CONTROLNET", "").strip(),
         "image_size": int(os.getenv("IMAGE_SIZE", "") or 1024),
         "lmstudio_context": int(os.getenv("LMSTUDIO_CONTEXT", "") or 16384),
         "monitor_window": os.getenv("MONITOR_WINDOW", "").strip().lower() not in ("0", "off", "false", "no"),
