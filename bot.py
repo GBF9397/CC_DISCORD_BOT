@@ -39,7 +39,7 @@ STATUS_EVERY, STATUS_UPDATES = 2.5, 20  # /status refreshes about every 3 s for 
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 # Text commands work in every channel, and also when typed with a full-width ！ or pasted as a /name line
 # (Discord sends a pasted slash command as plain text). Add new ! commands here.
-TEXT_COMMANDS = {"!ask", "!reset", "!draw", "!refine", "!style", "!search", "!event", "!poll"}
+TEXT_COMMANDS = {"!ask", "!reset", "!draw", "!refine", "!style", "!search", "!event", "!poll", "!status"}
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
@@ -174,6 +174,19 @@ class ChatBot(discord.Client):
             return ALREADY_QUEUED
         log.info("Picture queued, %d ahead", ahead)
         return DRAWING_NOTICE if ahead == 0 else QUEUED_NOTICE.format(ahead=ahead)
+
+    async def status_text(self):
+        stats = await asyncio.to_thread(monitor.read, 0.5)
+        return "```\n" + "\n".join(monitor.lines(stats)) + "\n```"
+
+    async def keep_status_live(self, edit):
+        """Refresh a posted status for a while; the last reading then stays."""
+        for _ in range(STATUS_UPDATES):
+            await asyncio.sleep(STATUS_EVERY)
+            try:
+                await edit(await self.status_text())
+            except discord.HTTPException:  # dismissed or deleted
+                return
 
     def change_style(self, channel_id, name):
         """Text to post after a member asks to switch drawing style (empty name shows the current one)."""
@@ -369,17 +382,8 @@ class ChatBot(discord.Client):
         @self.tree.command(name="status", description="Show how busy the bot's PC is (graphics card, CPU, RAM)")
         async def status(interaction: discord.Interaction):
             # Works while drawing too, so members can see the graphics card load.
-            async def reading():
-                stats = await asyncio.to_thread(monitor.read, 0.5)
-                return "```\n" + "\n".join(monitor.lines(stats)) + "\n```"
-
-            await interaction.response.send_message(await reading(), ephemeral=True)
-            for _ in range(STATUS_UPDATES):  # live for a while, then the last reading stays
-                await asyncio.sleep(STATUS_EVERY)
-                try:
-                    await interaction.edit_original_response(content=await reading())
-                except discord.HTTPException:  # the member dismissed it
-                    return
+            await interaction.response.send_message(await self.status_text(), ephemeral=True)
+            await self.keep_status_live(lambda text: interaction.edit_original_response(content=text))
 
         @self.tree.command(name="poll", description="Start a poll members vote on")
         @app_commands.describe(question="What to vote on",
@@ -492,7 +496,8 @@ class ChatBot(discord.Client):
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars, %d attachments)",
                  message.channel.id, message.author.id, len(message.content), len(message.attachments))
-        if message.author.bot or (self.drawing() and not self.is_draw_request(message.content)):
+        if message.author.bot or (self.drawing() and not self.is_draw_request(message.content)
+                                  and text_command(message.content)[0] != "!status"):
             return
         self.note_usage(message)
         if not self.allowed(message.author):
@@ -528,6 +533,10 @@ class ChatBot(discord.Client):
             await message.reply(await self.create_event(message.guild, message.author.display_name,
                                                         *parts[:4], hours, " | ".join(parts[5:])),
                                 mention_author=False)
+            return
+        if command == "!status":
+            sent = await message.reply(await self.status_text(), mention_author=False)
+            await self.keep_status_live(lambda text: sent.edit(content=text))
             return
         if command == "!poll":
             # !poll question | answers | @members  (answers and members optional)
