@@ -459,3 +459,19 @@ async def test_poll_without_members_defaults_to_one_day(mock_api):
     interaction = slash_interaction()
     await bot.tree.get_command("poll").callback(interaction, "q", "", "", None, False)
     assert interaction.response.sent[0][2].duration == timedelta(hours=24)
+
+
+async def test_bang_event_creates_an_event_from_one_line(mock_api):
+    bot = make_bot(mock_api.base_url)
+    guild = FakeGuild()
+    date = (datetime.now() + timedelta(days=3)).strftime("%m-%d")
+    msg = FakeMessage(f"!event 电影夜 | {date} | 8:30pm | 语音频道 | 3", FakeChannel(BOT_CHANNEL), guild=guild)
+    await bot.on_message(msg)
+    assert guild.created["name"] == "电影夜" and guild.created["location"] == "语音频道"
+    assert guild.created["start_time"].strftime("%H:%M") == "20:30"
+    assert guild.created["end_time"] - guild.created["start_time"] == timedelta(hours=3)
+    assert "https://discord.com/events/1/2" in msg.replies[0]
+
+    msg = FakeMessage("!event 电影夜 10-10 8:30pm", FakeChannel(BOT_CHANNEL), guild=FakeGuild())
+    await bot.on_message(msg)
+    assert msg.replies[0].startswith("Write it as")
