@@ -34,7 +34,9 @@ DRAW_HINT = ("\n\nThis bot can draw pictures, but not in a normal reply: if some
 QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again once every picture is done. "
                  "已排队，前面还有 {ahead} 张，全部画完我才回来聊天。")
 NO_PICTURE = "Attach the picture to edit. 请附上要修改的图片。"
-EDIT_USAGE = "Attach a picture and write the change, e.g. !edit 头发改成红色. 请附上图片并写要改什么，例如 !edit 头发改成红色。"
+EDIT_USAGE = ("Attach a picture and write the change, e.g. !edit 头发改成红色; attach a second picture to put "
+              "its character into the first. 请附上图片并写要改什么，例如 !edit 头发改成红色；"
+              "再附第二张图，就把第二张的角色换进第一张。")
 NOTHING_TO_RECALL = "You have no pictures here yet. 你在这个频道还没有图。"
 RECALL_LIST = ("Your last pictures here, 1 = oldest. Send !recall <number> (or /recall) to go back to one; "
                "your next /refine builds on it and the others stay. Now on: {base}. "
@@ -378,7 +380,8 @@ class ChatBot(discord.Client):
             return f"Pick 1 to {len(pictures)}. 请选 1 到 {len(pictures)}。", []
         return RECALLED.format(number=number), [discord.File(io.BytesIO(png), f"{number}.png")]
 
-    def queue_picture(self, request, channel_id, user_id, refine, send, edit, source=None, source_type=None):
+    def queue_picture(self, request, channel_id, user_id, refine, send, edit, source=None, source_type=None,
+                      reference=None, reference_type=None):
         """Queues a picture; send(text) / send(file=...) posts the result later, and
         edit(text) updates the notice with the drawing progress.
         Returns the notice to post now. The picture stays in RAM."""
@@ -393,7 +396,7 @@ class ChatBot(discord.Client):
 
         try:
             ahead = self.images.submit(request, channel_id, user_id, deliver, refine, progress, source,
-                                       source_type or "image/png")
+                                       source_type or "image/png", reference, reference_type or "image/png")
         except DrawError as e:
             return str(e)
         if ahead is None:
@@ -701,7 +704,7 @@ class ChatBot(discord.Client):
         if self.images is None:
             return
 
-        async def draw_command(interaction, request, refine, image=None):
+        async def draw_command(interaction, request, refine, image=None, character=None):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -712,6 +715,13 @@ class ChatBot(discord.Client):
                     await interaction.response.send_message(NO_PICTURE, ephemeral=True)
                     return
                 source = await image.read()  # RAM only
+            reference = reference_type = None
+            if character is not None:
+                reference_type = (character.content_type or "").split(";")[0]
+                if reference_type not in IMAGE_TYPES:
+                    await interaction.response.send_message(NO_PICTURE, ephemeral=True)
+                    return
+                reference = await character.read()  # RAM only
             caption = f"{interaction.user.mention}: {request[:200]}"
 
             async def send(text=None, file=None):
@@ -725,7 +735,7 @@ class ChatBot(discord.Client):
                 await interaction.edit_original_response(content=text)
 
             notice = self.queue_picture(request, interaction.channel_id, interaction.user.id, refine, send, edit,
-                                        source, source_type)
+                                        source, source_type, reference, reference_type)
             await interaction.response.send_message(notice, ephemeral=not notice.startswith("🎨"))  # refusals only to the asker
 
         @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until all pictures are done)")
@@ -739,9 +749,11 @@ class ChatBot(discord.Client):
             await draw_command(interaction, changes, refine=True)
 
         @self.tree.command(name="edit", description="Upload a picture and say what to change")
-        @app_commands.describe(image="The picture to change", changes="What to change, e.g. 'make the hair red'")
-        async def edit(interaction: discord.Interaction, image: discord.Attachment, changes: str):
-            await draw_command(interaction, changes, refine=False, image=image)
+        @app_commands.describe(image="The picture to change", changes="What to change, e.g. 'make the hair red'",
+                               character="Optional: a picture of a character to put into the first one")
+        async def edit(interaction: discord.Interaction, image: discord.Attachment, changes: str,
+                       character: discord.Attachment = None):
+            await draw_command(interaction, changes, refine=False, image=image, character=character)
 
         @self.tree.command(name="recall", description="Go back to one of your last pictures, so /refine builds on it")
         @app_commands.describe(number="Which picture (1 = oldest); leave empty to see them all")
@@ -873,13 +885,15 @@ class ChatBot(discord.Client):
             await message.reply(EDIT_USAGE, mention_author=False)
             return
         if self.images and command in ("!draw", "!refine", "!edit") and text[len(command):].strip():
-            source = source_type = None
+            source = source_type = reference = reference_type = None
             if command == "!edit":
                 pictures = [a for a in message.attachments if (a.content_type or "").split(";")[0] in IMAGE_TYPES]
                 if not pictures:
                     await message.reply(NO_PICTURE, mention_author=False)
                     return
                 source, source_type = await pictures[0].read(), pictures[0].content_type.split(";")[0]  # RAM only
+                if len(pictures) > 1:  # a second picture: put its character into the first
+                    reference, reference_type = await pictures[1].read(), pictures[1].content_type.split(";")[0]
 
             async def send(text=None, file=None):
                 # mention_author pings the member, since the picture can arrive minutes later.
@@ -895,7 +909,8 @@ class ChatBot(discord.Client):
                     await notice_message.edit(content=text)
 
             notice = self.queue_picture(text[len(command):].strip(), message.channel.id, message.author.id,
-                                        command == "!refine", send, edit, source, source_type)
+                                        command == "!refine", send, edit, source, source_type, reference,
+                                        reference_type)
             notice_message = await message.reply(notice, mention_author=False)
             return
         search = text.lower().startswith("!search ")

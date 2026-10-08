@@ -552,3 +552,36 @@ async def test_bare_edit_explains_itself_instead_of_chatting(mock_api, comfy, ev
     msg = FakeMessage("!edit", FakeChannel(CHANNEL))
     await bot.on_message(msg)
     assert msg.replies == [EDIT_USAGE] and not mock_api.requests
+
+
+async def test_edit_with_a_second_picture_puts_that_character_in_the_first(mock_api, comfy, events):
+    from imagegen import EDIT_STRENGTH, SWAP_STRENGTH
+    bot = image_bot(mock_api.base_url, comfy.url)
+    mock_api.reply = "1girl, (blue hair:1.3), (red horns:1.3), maid outfit AVOID: pink hair"
+    msg = FakeMessage("!edit 第2张的角色穿第1张的衣服", FakeChannel(BOT_CHANNEL), attachments=[
+        FakeAttachment(b"BASE", "image/png"), FakeAttachment(b"CHAR", "image/jpeg")])
+    await bot.on_message(msg)
+    await finish(bot)
+    assert msg.replies[1].filename == "image.png"
+    asked = mock_api.requests[-1]["messages"][0]["content"]
+    assert "Picture 2" in asked[0]["text"]  # Gemma is told which picture is which
+    assert asked[1]["image_url"]["url"] == "data:image/png;base64,QkFTRQ=="  # picture 1: redrawn
+    assert asked[2]["image_url"]["url"] == "data:image/jpeg;base64,Q0hBUg=="  # picture 2: the character
+    job = comfy.jobs[0]
+    assert job["8"]["inputs"]["image"] == "QkFTRQ=="  # only picture 1 goes to ComfyUI
+    assert job["5"]["inputs"]["denoise"] == SWAP_STRENGTH > EDIT_STRENGTH  # looks change more than a tweak
+
+
+async def test_slash_edit_passes_the_character_picture(mock_api, comfy, events):
+    from bot import ChatBot
+    from tests.test_bot import slash_interaction
+    bot = ChatBot({"token": "x", "base_url": mock_api.base_url, "model": "gemma4-12b-bionic-v2", "channel_ids": set(),
+                   "allowed_users": set(), "image_gen": True, "sd_checkpoint": "model.safetensors",
+                   "comfyui_url": comfy.url, "image_size": 1024, "lmstudio_context": 16384})
+    queued = []
+    bot.queue_picture = lambda *args: queued.append(args) or "🎨 Drawing"
+    interaction = slash_interaction()
+    interaction.user.mention = "<@5>"
+    await bot.tree.get_command("edit").callback(interaction, FakeAttachment(b"BASE", "image/png"), "换成她",
+                                               FakeAttachment(b"CHAR", "image/jpeg"))
+    assert queued[0][-4:] == (b"BASE", "image/png", b"CHAR", "image/jpeg")

@@ -77,6 +77,13 @@ EDITOR = (
     "colors, fur or hair, clothes, pose, background) plus the change. "
     + CHANGE_RULES + "\n\n[Change]\n{request}"
 )
+# For /edit with a second picture: that picture's character takes over the first one.
+SWAP_NOTE = (
+    "Picture 1 is the one being redrawn. Picture 2 shows a character to put into picture 1: keep "
+    "picture 1's clothes, pose, framing and background, but give the person picture 2's looks (hair "
+    "colour and style, eye colour, face, skin, horns, ears, hair ornaments), and name the character if "
+    "you know who it is. "
+)
 # Tells Gemma which drawing model will read the prompt.
 STYLE_HINTS = {
     "anime": "The drawing model is an anime model: use Danbooru tags.",
@@ -106,6 +113,7 @@ STYLE_NEGATIVE = {"realistic": "anime, manga, cartoon, illustration, drawing, pa
 STYLE_SAMPLER = {"realistic": {"sampler_name": "dpmpp_2m", "scheduler": "karras", "steps": 30, "cfg": 4.5}}
 KEEP_VERSIONS = 5  # pictures per member per channel that /recall can go back to, RAM only
 EDIT_STRENGTH = 0.6  # how much /edit may change the uploaded picture (1.0 = draw from scratch)
+SWAP_STRENGTH = 0.75  # more for a new character, since hair and face have to change
 NODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_node.py")
 EDIT_NODE = "BotLoadImageBase64"  # in comfy_node.py, copied into ComfyUI's custom_nodes
 
@@ -160,6 +168,8 @@ class Job:
     strength: float = 1.0  # share of the source picture redrawn; 1.0 when there is none
     png: bytes = None  # the finished picture, kept for /refine and /recall
     source_type: str = "image/png"
+    reference: bytes = None  # /edit's second picture: whose looks to use; RAM only, dropped once read
+    reference_type: str = "image/png"
 
 
 class ImageMaker:
@@ -221,13 +231,14 @@ class ImageMaker:
         self.base[key] = len(kept) - 1
 
     def submit(self, request, channel_id, user_id, deliver, refine=False, progress=None, source=None,
-               source_type="image/png"):
+               source_type="image/png", reference=None, reference_type="image/png"):
         """Queue a picture. Returns how many pictures are ahead (0 = starting now), or None if
         this member already has one waiting or being drawn. Raises DrawError if there is
         nothing to refine. deliver(png, error) is awaited
         with the PNG bytes or an error text once this picture is done; progress(percent),
         if given, is awaited every 10% while ComfyUI draws it. source: picture bytes to
-        redraw with the change (/edit), kept in RAM only."""
+        redraw with the change (/edit), kept in RAM only; reference: a second picture whose
+        character takes over the first."""
         if user_id in self.waiting:
             return None
         if refine and (channel_id, user_id) not in self.versions:
@@ -244,7 +255,8 @@ class ImageMaker:
         elif not refine:
             checkpoint = self.checkpoints[style]
         self.queue.append(Job(request, channel_id, user_id, deliver, refine, checkpoint, progress, source,
-                              self.style(channel_id), source_type=source_type))
+                              self.style(channel_id), source_type=source_type, reference=reference,
+                              reference_type=reference_type))
         if not self.drawing:
             self.drawing = True  # set before any await so the bot goes silent at once
             self._worker = asyncio.create_task(self._work())
@@ -292,9 +304,13 @@ class ImageMaker:
                 # Gemma sees the picture, so a refine keeps details the prompt never named.
                 images = [(old.png, "image/png")]
             elif job.source:
-                job.seed, job.strength = random.randrange(2**32), EDIT_STRENGTH
-                instruction = EDITOR.format(request=job.request, style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
+                job.seed, job.strength = random.randrange(2**32), SWAP_STRENGTH if job.reference else EDIT_STRENGTH
+                instruction = (SWAP_NOTE if job.reference else "") + EDITOR.format(
+                    request=job.request, style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
                 images = [(job.source, job.source_type)]
+                if job.reference:
+                    images.append((job.reference, job.reference_type))
+                    job.reference = None  # only Gemma needs it; ComfyUI redraws picture 1
             else:
                 job.seed = random.randrange(2**32)
                 instruction = PROMPT_WRITER.format(request=job.request,
