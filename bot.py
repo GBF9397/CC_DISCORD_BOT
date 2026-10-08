@@ -34,6 +34,7 @@ DRAW_HINT = ("\n\nThis bot can draw pictures, but not in a normal reply: if some
 QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again once every picture is done. "
                  "已排队，前面还有 {ahead} 张，全部画完我才回来聊天。")
 NO_PICTURE = "Attach the picture to edit. 请附上要修改的图片。"
+EDIT_USAGE = "Attach a picture and write the change, e.g. !edit 头发改成红色. 请附上图片并写要改什么，例如 !edit 头发改成红色。"
 NOTHING_TO_RECALL = "You have no pictures here yet. 你在这个频道还没有图。"
 RECALL_LIST = ("Your last pictures here, 1 = oldest. Send !recall <number> (or /recall) to go back to one; "
                "your next /refine builds on it and the others stay. Now on: {base}. "
@@ -867,6 +868,9 @@ class ChatBot(discord.Client):
             text, files = self.recall(message.channel.id, message.author.id,
                                       int(number) if number.isdigit() else None)
             await message.reply(text, files=files, mention_author=False)
+            return
+        if self.images and command == "!edit" and not text[len(command):].strip():
+            await message.reply(EDIT_USAGE, mention_author=False)
             return
         if self.images and command in ("!draw", "!refine", "!edit") and text[len(command):].strip():
             source = source_type = None

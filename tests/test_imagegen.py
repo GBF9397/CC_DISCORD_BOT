@@ -544,3 +544,11 @@ async def test_recall_and_edit_work_with_full_width_bang_in_any_channel(mock_api
     back = FakeMessage("/recall 1", other)
     await bot.on_message(back)
     assert back.replies == [RECALLED.format(number=1)]
+
+
+async def test_bare_edit_explains_itself_instead_of_chatting(mock_api, comfy, events):
+    from bot import EDIT_USAGE
+    bot = image_bot(mock_api.base_url, comfy.url)
+    msg = FakeMessage("!edit", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies == [EDIT_USAGE] and not mock_api.requests
