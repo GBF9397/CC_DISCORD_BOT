@@ -1,12 +1,13 @@
 """Image generation against a mock ComfyUI and a fake `lms` CLI."""
 import asyncio
+from collections import deque
 
 import pytest_asyncio
 from aiohttp import web
 
 import imagegen
 from bot import ALREADY_QUEUED, DRAWING_NOTICE, NO_PICTURE, NOTHING_TO_RECALL, QUEUED_NOTICE, RECALLED
-from imagegen import NOTHING_TO_REFINE, ImageMaker, blocked
+from imagegen import NOTHING_TO_REFINE, ImageMaker, Job, blocked
 from tests.test_bot import BOT_CHANNEL, BOT_CHANNEL_2, CHANNEL, FakeAttachment, FakeChannel, FakeMessage, make_bot
 
 PNG = b"\x89PNG fake"
@@ -170,10 +171,10 @@ async def test_queue_one_per_member_and_silent_to_chat(mock_api, comfy, events):
     ch = FakeChannel(BOT_CHANNEL)
     first = FakeMessage("!draw a cat", ch, author_id=1)
     await bot.on_message(first)
-    assert first.replies == [DRAWING_NOTICE]
+    assert first.replies[0].split("\n")[0] == DRAWING_NOTICE  # then the time estimate
     second = FakeMessage("!draw a dog", ch, author_id=2)
     await bot.on_message(second)
-    assert second.replies == [QUEUED_NOTICE.format(ahead=1)]
+    assert second.replies[0].split("\n")[0] == QUEUED_NOTICE.format(ahead=1)
     again = FakeMessage("!draw a fox", ch, author_id=2)
     await bot.on_message(again)
     assert again.replies == [ALREADY_QUEUED]
@@ -202,7 +203,7 @@ async def test_member_can_queue_again_once_their_picture_is_done(mock_api, comfy
         await asyncio.sleep(0.01)
     late = FakeMessage("!draw a bird", ch, author_id=1)
     await bot.on_message(late)
-    assert late.replies == [QUEUED_NOTICE.format(ahead=1)]
+    assert late.replies[0].split("\n")[0] == QUEUED_NOTICE.format(ahead=1)
     await finish(bot)
     assert len(comfy.jobs) == 3
     assert late.replies[1].filename == "image.png"
@@ -350,7 +351,7 @@ async def test_drawing_notice_shows_the_progress_in_percent(mock_api, comfy, eve
     await bot.on_message(msg)
     notice = msg.sent
     await finish(bot)
-    assert msg.replies[0] == DRAWING_NOTICE and msg.replies[1].filename == "image.png"
+    assert msg.replies[0].split("\n")[0] == DRAWING_NOTICE and msg.replies[1].filename == "image.png"
     assert msg.mentioned  # the member is pinged when the picture is posted
     assert notice.edits == [f"{DRAWING_NOTICE}\n▓▓░░░░░░░░ 25%", f"{DRAWING_NOTICE}\n▓▓▓▓▓░░░░░ 50%",
                             f"{DRAWING_NOTICE}\n▓▓▓▓▓▓▓░░░ 75%", f"{DRAWING_NOTICE}\n▓▓▓▓▓▓▓▓▓▓ 100%"]
@@ -585,3 +586,30 @@ async def test_slash_edit_passes_the_character_picture(mock_api, comfy, events):
     await bot.tree.get_command("edit").callback(interaction, FakeAttachment(b"BASE", "image/png"), "换成她",
                                                FakeAttachment(b"CHAR", "image/jpeg"))
     assert queued[0][-4:] == (b"BASE", "image/png", b"CHAR", "image/jpeg")
+
+
+async def test_estimate_comes_from_this_pcs_last_pictures(mock_api, comfy, events):
+    from bot import eta_text
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "model.safetensors"})
+    assert maker.estimate() is None  # nothing timed yet since the restart
+    mock_api.reply = "a cat"
+    await draw(maker, "画一只猫")
+    assert maker.timings["draw"] and maker.timings["switch"] and maker.timings["prompt:draw"]
+    maker.timings.clear()
+    maker.timings.update(switch=deque([60.0]), draw=deque([40.0, 50.0]), prompt=deque([20.0, 100.0]))
+    maker.timings["prompt:edit"] = deque([100.0])
+    maker.queue.extend([Job("a", 1, 1, None), Job("b", 1, 2, None, source=b"PNG")])
+    maker.waiting.update({1, 2})
+    assert maker.estimate() == 60 + (60 + 45) + (100 + 45)  # a plain draw falls back to every prompt's average
+    assert eta_text(None).startswith("⏱️") and eta_text(45.4) == "⏱️ 预计 45 秒 Estimate 45 sec"
+    assert eta_text(1255) == "⏱️ 预计 20 分 55 秒 Estimate 20 min 55 sec"
+
+
+async def test_queue_notice_tells_the_estimate(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    bot.images.timings.update(switch=deque([30.0]), draw=deque([60.0]), prompt=deque([30.0]))
+    msg = FakeMessage("!draw a cat", FakeChannel(BOT_CHANNEL))
+    mock_api.reply = "a cat"
+    await bot.on_message(msg)
+    assert msg.replies[0] == f"{DRAWING_NOTICE}\n⏱️ 预计 2 分 0 秒 Estimate 2 min 0 sec"
+    await finish(bot)

@@ -27,6 +27,7 @@ CDN = "https://cdn.discordapp.com"
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):(\d+)>")
 DRAWING_NOTICE = "🎨 Drawing... I'm offline until it's done. 画画中，画完才回来。"
 DONE_NOTICE = "🎨 Done! 画好了！"
+FIRST_TIMING = "⏱️ First picture since I started, timing it; estimates start with the next one. 第一张图，计时中，下一张起会显示预计时间。"
 # Added to the system prompt when drawing is on, so Gemma stops saying it can't make pictures.
 DRAW_HINT = ("\n\nThis bot can draw pictures, but not in a normal reply: if someone asks you to draw "
              "or make a picture, tell them to send !draw followed by what they want (add realistic "
@@ -72,6 +73,16 @@ def text_command(text):
     first, _, rest = text.strip().partition(" ")
     name = "!" + first[1:].lower() if first[:1] in "!！/" else ""
     return (name, rest.strip()) if name in TEXT_COMMANDS else (None, text)
+
+
+def eta_text(seconds):
+    """'⏱️ 预计 20 分 55 秒 Estimate 20 min 55 sec' for a picture's wait, or FIRST_TIMING with nothing timed yet."""
+    if seconds is None:
+        return FIRST_TIMING
+    minutes, seconds = divmod(round(seconds), 60)
+    if minutes:
+        return f"⏱️ 预计 {minutes} 分 {seconds} 秒 Estimate {minutes} min {seconds} sec"
+    return f"⏱️ 预计 {seconds} 秒 Estimate {seconds} sec"
 
 
 def poll_answers(options):
@@ -402,7 +413,8 @@ class ChatBot(discord.Client):
         if ahead is None:
             return ALREADY_QUEUED
         log.info("Picture queued, %d ahead", ahead)
-        return DRAWING_NOTICE if ahead == 0 else QUEUED_NOTICE.format(ahead=ahead)
+        notice = DRAWING_NOTICE if ahead == 0 else QUEUED_NOTICE.format(ahead=ahead)
+        return f"{notice}\n{eta_text(self.images.estimate())}"
 
     async def status_text(self):
         stats = await asyncio.to_thread(monitor.read, 0.5)

@@ -14,8 +14,10 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
-from collections import deque
+from collections import defaultdict, deque
+from statistics import fmean
 from dataclasses import dataclass
 
 import aiohttp
@@ -122,6 +124,7 @@ WEIGHTED = re.compile(r"^\((.*?)(?::[\d.]+)?\)$")
 # How much of the last picture a /refine redraws (1.0 = draw again with the same seed).
 REFINE_STRENGTH = {"small": 0.45, "medium": 0.6, "big": 0.75, "new": 1.0}
 MAX_AVOID = 12  # negative tags carried from round to round
+TIMINGS_KEPT = 5  # recent seconds per step, for the time estimate; RAM only
 
 
 def split_tags(text):
@@ -186,6 +189,7 @@ class ImageMaker:
         self.drawing = False  # while True the bot only takes picture requests
         self.queue = deque()  # Jobs, RAM only
         self.waiting = set()  # members with a picture queued or being drawn
+        self.timings = defaultdict(lambda: deque(maxlen=TIMINGS_KEPT))  # step -> recent seconds, RAM only
         # (channel_id, user_id) -> that member's last KEEP_VERSIONS finished Jobs with their png, RAM only.
         # Per member, so one member's /refine never builds on another member's picture.
         self.versions = {}
@@ -279,6 +283,22 @@ class ImageMaker:
             self.waiting.clear()
             self.drawing = False
 
+    @staticmethod
+    def _kind(job):
+        return "refine" if job.refine else "edit" if job.source else "draw"
+
+    def estimate(self):
+        """Seconds until every queued picture is done, from this PC's last few pictures; None until one
+        was timed. Gemma's prompt time differs by kind (pictures to look at take longer)."""
+        t = self.timings
+        if not t["draw"]:
+            return None
+        draw, any_prompt = fmean(t["draw"]), fmean(t["prompt"]) if t["prompt"] else 0.0
+        being_drawn = len(self.waiting) - len(self.queue)  # prompts written, still to draw
+        return (fmean(t["switch"]) if t["switch"] else 0.0) + being_drawn * draw + sum(
+            fmean(t[f"prompt:{self._kind(j)}"]) if t[f"prompt:{self._kind(j)}"] else any_prompt for j in self.queue
+        ) + len(self.queue) * draw
+
     def _refine_checkpoint(self, job, old):
         """A refine keeps its picture's model, unless the change starts with a style name or
         the channel switched style after the picture was drawn."""
@@ -315,6 +335,7 @@ class ImageMaker:
                 job.seed = random.randrange(2**32)
                 instruction = PROMPT_WRITER.format(request=job.request,
                                                    style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
+            started = time.monotonic()
             prompt = await self.brain.image_prompt(instruction, images)
             if prompt and prompt.startswith("SEARCH:"):  # one lookup per picture, results never stored
                 name = prompt[len("SEARCH:"):].strip()
@@ -323,6 +344,10 @@ class ImageMaker:
                 log.info("Looked up a named subject on the web (%d characters, %d pictures)", len(results), len(found))
                 prompt = await self.brain.image_prompt(
                     instruction + LOOKUP.format(results=results or "(no results)"), images + found)
+            if prompt is not None:
+                took = time.monotonic() - started
+                self.timings["prompt"].append(took)
+                self.timings[f"prompt:{self._kind(job)}"].append(took)
             if prompt is None:
                 await self._deliver(job.deliver, job.user_id, None, "Sorry, my brain (LM Studio) is offline right now.")
             elif prompt.startswith("REFUSED"):
@@ -360,9 +385,11 @@ class ImageMaker:
             job.source = old.png  # redraw part of the last picture instead of starting over
 
     async def _draw_all(self, jobs):
+        started = time.monotonic()
         await self._start_comfy()
         log.info("Drawing %d picture(s); unloading %s from the GPU", len(jobs), self.brain.model)
         await self._lms("unload", self.brain.model)
+        switch = time.monotonic() - started
         try:
             for job in jobs:
                 try:
@@ -371,7 +398,9 @@ class ImageMaker:
                             raise DrawError("Sorry, /edit needs ComfyUI restarted once. Close ComfyUI and "
                                             "I'll start it again. /edit 需要先重启一次 ComfyUI。")
                         job.source, job.strength = None, 1.0  # a refine draws again with the same seed
+                    started = time.monotonic()
                     png = await self._comfy(job, job.progress)
+                    self.timings["draw"].append(time.monotonic() - started)
                 except DrawError as e:
                     await self._deliver(job.deliver, job.user_id, None, str(e))
                 else:
@@ -380,9 +409,11 @@ class ImageMaker:
         finally:
             await self._free_comfy()
             log.info("Loading %s back onto the GPU", self.brain.model)
+            started = time.monotonic()
             if not await self._lms("load", self.brain.model,
                                    "--context-length", str(self.context_length)):
                 log.error("Could not reload %s; load it in LM Studio by hand", self.brain.model)
+            self.timings["switch"].append(switch + time.monotonic() - started)
 
     async def _deliver(self, deliver, user_id, png, error):
         """Hand back one result; the member may then queue another picture."""
