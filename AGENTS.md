@@ -95,7 +95,7 @@ After a test, before any restart: `Select-String -Path bot-error.log -Pattern "E
 | 2 | `!refine` 5-6 rounds (red hair, then 戴上帽子, 背景改成晚上, ...) | each round changes only what was asked; earlier changes stay | not tested |
 | 3 | after 2+ refines: `!recall`, then `!recall 1`, then `!refine 改成蓝色衣服` | `!recall` shows only the previous picture ("回到第 N 张（共 M 张）"); `!recall 1` the first; the refine builds on it; at the first picture `!recall` says 已经是最早的一张 | changed 10-08 (`!recall` = one step back), not tested |
 | 4 | two members `!refine` at the same time | each gets their own picture changed | not tested (Ep, at home) |
-| 5 | `!draw realistic 一个女生` | realistic photo style | not tested |
+| 5 | `!draw realistic 一个女生` | realistic photo style | passed 10-08 (natural photo, ~1 min) |
 | 6 | `!dmdraw 一只猫` | your message disappears; channel shows only "画画中（私人请求）" + countdown/progress, no name; DM "收到…" then the picture by DM | passed 10-08 once Ep gave the bot Manage Messages (before that the message stayed; now the bot DMs CANT_HIDE in that case) |
 | 7 | `/dmdraw request:一只猫` | only you see "开始画了，画好私信给你"; rest as #6 | passed 10-08 |
 | 8 | `!dmedit 第2张的角色穿第1张的衣服` with two pictures | message deleted; result by DM, looks like picture 2's character | 10-08: DM ok but drifted to a generic teal-haired girl (name dropped + faded); fixed: swaps keep the name and are never faded |
