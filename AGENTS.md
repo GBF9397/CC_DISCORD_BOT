@@ -100,7 +100,7 @@ After a test, before any restart: `Select-String -Path bot-error.log -Pattern "E
 | 7 | `/dmdraw request:一只猫` | only you see "开始画了，画好私信给你"; rest as #6 | not tested |
 | 8 | `!dmedit 第2张的角色穿第1张的衣服` with two pictures | message deleted; result by DM, looks like picture 2's character | 10-08: DM ok but drifted to a generic teal-haired girl (name dropped + faded); fixed: swaps keep the name and are never faded |
 | 9 | `!dmrefine 戴上帽子`, `!dmrecall`, `!dmrecall 1` | refines your last private picture; `!dmrecall` sends only the previous one by DM; public `!recall` doesn't show private pictures | refine/DM passed 10-08; `!dmrecall` now one step back |
-| 10 | turn off DMs from server members, then `!dmdraw 一只猫` | channel reply "我私信不了你…", message stays, nothing drawn | can't test on Ep's account: Ep shares another server with the bot where DMs are on, so the DM still arrives (expected Discord behaviour). Unit test covers it |
+| 10 | turn off DMs from server members, then `!dmdraw 一只猫` | channel reply "我私信不了你…", message stays, nothing drawn | passed 10-08 after turning DMs off in both servers Ep shares with the bot (with one still on, the DM still arrives; that's Discord, not a bug) |
 | 13 | grant the bot **Manage Messages** in #gemma-4-img-sfw, then `!dmdraw 一只猫` | your message is deleted | not tested |
 | 11 | second picture after a restart | queue notice shows `⏱️ 预计 X 分 Y 秒` | passed 10-08 |
 | 12 | two-picture swap `!edit 第2张的角色穿第1张的衣服` | outfit/pose from 1, looks from 2 | passed 10-08 |
