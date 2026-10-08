@@ -150,7 +150,7 @@ NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, te
 STYLE_NEGATIVE = {"realistic": "anime, manga, cartoon, illustration, drawing, painting, 2d, cel shading, cgi, 3d render"}
 # Sampler settings per style; Juggernaut XL (the realistic model) is made for DPM++ 2M Karras at a low CFG.
 STYLE_SAMPLER = {"realistic": {"sampler_name": "dpmpp_2m", "scheduler": "karras", "steps": 30, "cfg": 4.5}}
-KEEP_VERSIONS = 5  # pictures per member per channel that /recall can go back to, RAM only
+KEEP_VERSIONS = 5  # pictures per member per channel that /recall can undo back to, RAM only
 EDIT_STRENGTH = 0.6  # how much /edit may change the uploaded picture (1.0 = draw from scratch)
 SWAP_STRENGTH = 0.75  # more for a new character, since hair and face have to change
 NODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_node.py")
@@ -242,8 +242,8 @@ class ImageMaker:
         self.timings = defaultdict(lambda: deque(maxlen=TIMINGS_KEPT))  # step -> recent seconds, RAM only
         # (channel_id, user_id) -> that member's last KEEP_VERSIONS finished Jobs with their png, RAM only.
         # Per member, so one member's /refine never builds on another member's picture.
-        self.versions = {}
-        self.base = {}  # (channel_id, user_id) -> index in versions the next /refine builds on
+        self.versions = {}  # the next /refine builds on the last one
+        self.fresh = set()  # (channel_id, user_id) whose next /refine gets a new seed, after an undo
         self.styles = {}  # channel_id -> style name, RAM only
         self._install_node()
 
@@ -262,19 +262,20 @@ class ImageMaker:
         return next((name for name, file in self.checkpoints.items() if file == checkpoint), None)
 
     def history(self, channel_id, user_id):
-        """The member's pictures here, oldest first, and the index /refine builds on."""
-        key = (channel_id, user_id)
-        return [job.png for job in self.versions.get(key, [])], self.base.get(key)
+        """The member's pictures here, oldest first; /refine builds on the last one."""
+        return [job.png for job in self.versions.get((channel_id, user_id), [])]
 
-    def recall(self, channel_id, user_id, number):
-        """Make picture `number` (1 = oldest) the one the next /refine builds on.
-        Returns its PNG, or None if there is no such picture. The others are kept."""
+    def undo(self, channel_id, user_id):
+        """Drop the member's newest picture (one they didn't like) and return the one before it, or None
+        if there is nothing before. The next /refine gets a fresh seed: the same picture, prompt and seed
+        would draw the dropped picture again exactly."""
         key = (channel_id, user_id)
         kept = self.versions.get(key, [])
-        if not 1 <= number <= len(kept):
+        if len(kept) < 2:
             return None
-        self.base[key] = number - 1
-        return kept[number - 1].png
+        kept.pop()
+        self.fresh.add(key)
+        return kept[-1].png
 
     def _keep(self, job, png):
         key = (job.channel_id, job.user_id)
@@ -282,7 +283,6 @@ class ImageMaker:
         kept = self.versions.setdefault(key, [])
         kept.append(job)
         del kept[:-KEEP_VERSIONS]
-        self.base[key] = len(kept) - 1
 
     def submit(self, request, channel_id, user_id, deliver, refine=False, progress=None, source=None,
                source_type="image/png", reference=None, reference_type="image/png", style_channel=None):
@@ -388,9 +388,10 @@ class ImageMaker:
             images, swap = [], bool(job.reference)
             if job.refine:
                 key = (job.channel_id, job.user_id)
-                old = self.versions[key][self.base[key]]
+                old = self.versions[key][-1]
                 job.checkpoint = self._refine_checkpoint(job, old)
-                job.seed = old.seed
+                job.seed = random.randrange(2**32) if key in self.fresh else old.seed
+                self.fresh.discard(key)
                 instruction = REFINER.format(prompt=old.prompt, request=job.request,
                                              style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
                 # Gemma sees the picture, so a refine keeps details the prompt never named.

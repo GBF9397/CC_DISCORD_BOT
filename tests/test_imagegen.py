@@ -398,36 +398,41 @@ async def test_refine_builds_on_each_members_own_picture(mock_api, comfy, events
     assert early.replies == [NOTHING_TO_REFINE]
 
 
-async def test_recall_goes_back_and_branches_without_losing_pictures(mock_api, comfy, events):
+async def test_recall_undoes_the_newest_picture_and_the_next_refine_tries_afresh(mock_api, comfy, events):
+    """!recall = undo: the picture the member didn't like is dropped, and refining again gives a new try
+    instead of the same picture (same picture + same prompt + same seed draws it again exactly)."""
+    from bot import AT_OLDEST
     bot = image_bot(mock_api.base_url, comfy.url)
     ch = FakeChannel(BOT_CHANNEL)
     none = FakeMessage("!recall", ch)
     await bot.on_message(none)
     assert none.replies == [NOTHING_TO_RECALL]
-    for prompt, text in (("girl, short hair", "!draw a girl"), ("girl, medium hair", "!refine longer hair"),
-                         ("girl, very long hair", "!refine longer hair")):
+    for prompt, text in (("girl, short hair", "!draw a girl"), ("ADD: medium hair SIZE: medium", "!refine longer hair"),
+                         ("ADD: hat SIZE: medium", "!refine 戴上帽子")):
         mock_api.reply = prompt
         await bot.on_message(FakeMessage(text, ch))
         await finish(bot)
-    step = FakeMessage("!recall", ch)  # no number: one step back, only that picture
-    await bot.on_message(step)
-    assert step.replies == [RECALLED.format(number=2, total=3)] and [f.filename for f in step.files] == ["2.png"]
-    back = FakeMessage("!recall 2", ch)
-    await bot.on_message(back)
-    assert back.replies == [RECALLED.format(number=2, total=3)] and back.files[0].fp.read() == PNG
-    mock_api.reply = "girl, medium hair, red ribbon"
-    await bot.on_message(FakeMessage("!refine add a ribbon", ch))
+    seeds = [job["5"]["inputs"]["seed"] for job in comfy.jobs]
+    assert seeds[0] == seeds[1] == seeds[2]  # refines keep the seed, so the look stays
+    undo = FakeMessage("!recall", ch)
+    await bot.on_message(undo)
+    assert undo.replies == [RECALLED] and len(undo.files) == 1  # only the picture before
+    assert len(bot.images.history(BOT_CHANNEL, 1)) == 2  # the hat one is gone, not kept around
+    mock_api.reply = "ADD: hat SIZE: medium"
+    await bot.on_message(FakeMessage("!refine 戴上帽子", ch))
     await finish(bot)
-    assert "[Tags]\ngirl, medium hair\n" in mock_api.requests[-1]["messages"][0]["content"][0]["text"]
-    pictures, base = bot.images.history(BOT_CHANNEL, 1)
-    assert len(pictures) == 4 and base == 3  # the very long hair one is still there
-    for _ in range(3):
+    assert "(medium hair:1.3)" in mock_api.requests[-1]["messages"][0]["content"][0]["text"]  # built on picture 2
+    assert comfy.jobs[3]["5"]["inputs"]["seed"] != seeds[2]  # a fresh try, not the undone picture again
+    assert len(bot.images.history(BOT_CHANNEL, 1)) == 3
+    for _ in range(2):
+        await bot.on_message(FakeMessage("!recall", ch))
+    last = FakeMessage("!recall 2", ch)  # a number is ignored: recall only ever undoes one
+    await bot.on_message(last)
+    assert last.replies == [AT_OLDEST] and not last.files and len(bot.images.history(BOT_CHANNEL, 1)) == 1
+    for _ in range(6):
         await bot.on_message(FakeMessage("!draw more", ch))
         await finish(bot)
-    assert len(bot.images.history(BOT_CHANNEL, 1)[0]) == 5  # only the last 5 are kept
-    bad = FakeMessage("!recall 9", ch)
-    await bot.on_message(bad)
-    assert bad.replies[0].startswith("Pick 1 to 5")
+    assert len(bot.images.history(BOT_CHANNEL, 1)) == 5  # only the last 5 are kept
 
 
 async def test_refine_only_touches_what_the_member_asked_for(mock_api, comfy, events):
@@ -548,12 +553,9 @@ async def test_recall_and_edit_work_with_full_width_bang_in_any_channel(mock_api
     await bot.on_message(edit)
     await finish(bot)
     assert edit.replies[1].filename == "image.png"
-    back = FakeMessage("/recall 1", other)
-    await bot.on_message(back)
-    assert back.replies == [RECALLED.format(number=1, total=1)]
-    oldest = FakeMessage("!recall", other)
+    oldest = FakeMessage("/recall", other)  # a pasted /recall line works too
     await bot.on_message(oldest)
-    assert "最早" in oldest.replies[0] and not oldest.files
+    assert "第一张" in oldest.replies[0] and not oldest.files
 
 
 async def test_bare_edit_explains_itself_instead_of_chatting(mock_api, comfy, events):
@@ -802,8 +804,8 @@ async def test_dmdraw_sends_the_picture_by_dm_and_names_no_one(mock_api, comfy, 
     public = FakeMessage("!recall", channel)
     await bot.on_message(public)
     assert public.replies == [NOTHING_TO_RECALL]  # private pictures stay out of the public list
-    await bot.on_message(private_message("！dmrecall 1", channel, dm))
-    assert [f.filename for f in dm.sent[-1]] == ["1.png"]
+    await bot.on_message(private_message("！dmrecall", channel, dm))
+    assert "第一张" in dm.sent[-1]  # only one private picture: nothing to undo
     mock_api.reply = "ADD: hat SIZE: medium"
     await bot.on_message(private_message("!dmrefine 戴帽子", channel, dm))
     await finish(bot)

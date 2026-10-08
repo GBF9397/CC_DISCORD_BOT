@@ -52,8 +52,9 @@ EDIT_USAGE = ("Attach a picture and write the change, e.g. !edit 头发改成红
               "its character into the first. 请附上图片并写要改什么，例如 !edit 头发改成红色；"
               "再附第二张图，就把第二张的角色换进第一张。")
 NOTHING_TO_RECALL = "You have no pictures here yet. 你在这个频道还没有图。"
-RECALLED = "↩️ Back to {number}/{total}. 回到第 {number} 张（共 {total} 张），下次 refine 从这张改。"
-AT_OLDEST = "This is your oldest picture ({total} kept). 已经是最早的一张了（共 {total} 张）。"
+RECALLED = ("↩️ Undone: back to the picture before. Your next refine starts from it with a fresh try. "
+            "已撤回最新那张，回到上一张；下次 refine 从这张重新画。")
+AT_OLDEST = "Nothing to undo: this is your first picture. 没有可以撤回的了，这是你的第一张。"
 ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
                   "你已经有一张在排队了，画完才能再点。")
 STATUS_EVERY, STATUS_UPDATES = 2.5, 20  # /status refreshes about every 3 s for a minute
@@ -390,20 +391,15 @@ class ChatBot(discord.Client):
         command = DM_COMMANDS.get(command, command)  # private ones go through too
         return bool(self.images) and (command == "!recall" or (bool(rest) and command in ("!draw", "!refine", "!edit")))
 
-    def recall(self, channel_id, user_id, number):
-        """Returns (text, PNG files) to post for /recall: the picture to go back to. No number means one
-        step back from the current one, the usual move after a refine that didn't work out."""
-        pictures, base = self.images.history(channel_id, user_id)
-        if not pictures:
+    def recall(self, channel_id, user_id):
+        """Returns (text, PNG files) to post for /recall: undoes the member's newest picture, the usual
+        move after a refine that didn't work out, and shows only the picture before it."""
+        if not self.images.history(channel_id, user_id):
             return NOTHING_TO_RECALL, []
-        if number is None:
-            if base == 0:
-                return AT_OLDEST.format(total=len(pictures)), []
-            number = base  # the picture before the current one, counted from 1
-        png = self.images.recall(channel_id, user_id, number)
+        png = self.images.undo(channel_id, user_id)
         if png is None:
-            return f"Pick 1 to {len(pictures)}. 请选 1 到 {len(pictures)}。", []
-        return RECALLED.format(number=number, total=len(pictures)), [discord.File(io.BytesIO(png), f"{number}.png")]
+            return AT_OLDEST, []
+        return RECALLED, [discord.File(io.BytesIO(png), "image.png")]
 
     def queue_picture(self, request, channel_id, user_id, refine, send, edit, source=None, source_type=None,
                       reference=None, reference_type=None, private=False):
@@ -455,7 +451,7 @@ class ChatBot(discord.Client):
                 log.warning("Can't delete a private request: no Manage Messages in channel %s", message.channel.id)
                 await dm.send(CANT_HIDE)
         if command == "!recall":
-            text, files = self.recall(PRIVATE, message.author.id, int(rest) if rest.isdigit() else None)
+            text, files = self.recall(PRIVATE, message.author.id)
             await dm.send(text, files=files)
             return
         if not rest or (command == "!edit" and not uploads):
@@ -868,13 +864,12 @@ class ChatBot(discord.Client):
                          character: discord.Attachment = None):
             await draw_command(interaction, changes, refine=False, image=image, character=character, private=True)
 
-        @self.tree.command(name="dmrecall", description="Go back one private picture (or to a number), sent by DM")
-        @app_commands.describe(number="Which picture (1 = oldest); leave empty to go back one")
-        async def dmrecall(interaction: discord.Interaction, number: int = None):
+        @self.tree.command(name="dmrecall", description="Undo your newest private picture; the one before comes by DM")
+        async def dmrecall(interaction: discord.Interaction):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
-            text, files = self.recall(PRIVATE, interaction.user.id, number)
+            text, files = self.recall(PRIVATE, interaction.user.id)
             try:
                 await (await interaction.user.create_dm()).send(text, files=files)
             except discord.HTTPException:
@@ -882,13 +877,12 @@ class ChatBot(discord.Client):
                 return
             await interaction.response.send_message("Sent by DM. 已私信你。", ephemeral=True)
 
-        @self.tree.command(name="recall", description="Go back one picture (or to a number), so /refine builds on it")
-        @app_commands.describe(number="Which picture (1 = oldest); leave empty to go back one")
-        async def recall(interaction: discord.Interaction, number: int = None):
+        @self.tree.command(name="recall", description="Undo your newest picture and go back to the one before")
+        async def recall(interaction: discord.Interaction):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
-            text, files = self.recall(interaction.channel_id, interaction.user.id, number)
+            text, files = self.recall(interaction.channel_id, interaction.user.id)
             await interaction.response.send_message(text, files=files, ephemeral=not files)
 
         @self.tree.command(name="drawstyle", description="Switch the drawing style in this channel")
@@ -1006,9 +1000,7 @@ class ChatBot(discord.Client):
             await self.private_picture(message, DM_COMMANDS[command], text[len(command):].strip())
             return
         if self.images and command == "!recall":
-            number = text[len(command):].strip()
-            text, files = self.recall(message.channel.id, message.author.id,
-                                      int(number) if number.isdigit() else None)
+            text, files = self.recall(message.channel.id, message.author.id)
             await message.reply(text, files=files, mention_author=False)
             return
         if self.images and command == "!edit" and not text[len(command):].strip():
