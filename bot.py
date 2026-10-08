@@ -34,13 +34,25 @@ QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again 
 ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
                   "你已经有一张在排队了，画完才能再点。")
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
+# Text commands work in every channel, and also when typed with a full-width ！ or pasted as a /name line
+# (Discord sends a pasted slash command as plain text). Add new ! commands here.
+TEXT_COMMANDS = {"!ask", "!reset", "!draw", "!refine", "!style", "!search", "!event", "!poll"}
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
+POLL_USAGE = ("Write it as: !poll question | answers | @members (answers and members optional), e.g. "
+              "!poll 今晚吃什么 | 炒饭，煎蛋 | @Daddy宏\n格式：!poll 问题 | 选项 | @成员（选项和成员可不写）")
 EVENT_USAGE = ("Write it as: !event name | date | time | place (| hours | details), e.g. "
                "!event 电影夜 | 10-10 | 8:30pm | 语音频道\n格式：!event 名称 | 日期 | 时间 | 地点（| 小时 | 说明）")
 NO_EVENT_PERMISSION = ("I need the Create Events permission in this server to do that. "
                        "我在这个服务器没有「创建活动」权限，请管理员给我加上。")
+
+
+def text_command(text):
+    """Returns (command, rest) when text starts with a known text command (!, ！ or /), else (None, text)."""
+    first, _, rest = text.strip().partition(" ")
+    name = "!" + first[1:].lower() if first[:1] in "!！/" else ""
+    return (name, rest.strip()) if name in TEXT_COMMANDS else (None, text)
 
 
 def poll_answers(options):
@@ -135,8 +147,8 @@ class ChatBot(discord.Client):
         return self.images is not None and self.images.drawing
 
     def is_draw_request(self, content):
-        words = content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", "").split()
-        return bool(self.images) and len(words) > 1 and words[0].lower() in ("!draw", "!refine")
+        command, rest = text_command(content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", ""))
+        return bool(self.images) and bool(rest) and command in ("!draw", "!refine")
 
     def queue_picture(self, request, channel_id, user_id, refine, send, edit):
         """Queues a picture; send(text) / send(file=...) posts the result later, and
@@ -235,6 +247,22 @@ class ChatBot(discord.Client):
 
     async def on_guild_stickers_update(self, guild, before, after):
         await self.learn_meanings(guild)
+
+    def make_poll(self, question, options="", members="", hours=None, multiple=False):
+        """Returns (error, message text, poll); error is set when the poll can't be made."""
+        answers = poll_answers(options)
+        if len(answers) > 10:
+            return "A poll can have at most 10 answers. 投票最多 10 个选项。", None, None
+        voters = list(dict.fromkeys(MEMBER_MENTION.findall(members)))
+        if members.strip() and not voters:
+            return "Pick members with @, e.g. @Daddy宏 @启胜. 请用 @ 选成员。", None, None
+        hours = hours or (168 if voters else 24)
+        vote = discord.Poll(question=question[:300], duration=timedelta(hours=hours), multiple=multiple)
+        for answer in answers:
+            vote.add_answer(text=answer)
+        # The voter list lives in the poll message itself, so nothing is kept and a restart loses nothing.
+        content = (POLL_VOTERS + " ".join(f"<@{v}>" for v in voters)) if voters else None
+        return None, content, vote
 
     async def create_event(self, guild, user_name, name, date, time, place, hours=2.0, details=""):
         """Creates a Discord scheduled event; returns the text to post."""
@@ -346,22 +374,10 @@ class ChatBot(discord.Client):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
-            answers = poll_answers(options)
-            if len(answers) > 10:
-                await interaction.response.send_message(
-                    "A poll can have at most 10 answers. 投票最多 10 个选项。", ephemeral=True)
+            error, content, vote = self.make_poll(question, options, members, hours, multiple)
+            if error:
+                await interaction.response.send_message(error, ephemeral=True)
                 return
-            voters = list(dict.fromkeys(MEMBER_MENTION.findall(members)))
-            if members.strip() and not voters:
-                await interaction.response.send_message(
-                    "Pick members with @, e.g. @Daddy宏 @启胜. 请用 @ 选成员。", ephemeral=True)
-                return
-            hours = hours or (168 if voters else 24)
-            vote = discord.Poll(question=question[:300], duration=timedelta(hours=hours), multiple=multiple)
-            for answer in answers:
-                vote.add_answer(text=answer)
-            # The voter list lives in the poll message itself, so nothing is kept and a restart loses nothing.
-            content = (POLL_VOTERS + " ".join(f"<@{v}>" for v in voters)) if voters else None
             await interaction.response.send_message(content, poll=vote)
 
         @self.tree.command(name="event", description="Create a server event with a date, time and place")
@@ -465,15 +481,23 @@ class ChatBot(discord.Client):
             return
         text = message.content.strip()
 
-        if text == "!reset":
+        for tag in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
+            text = text.replace(tag, "")
+        command, rest = text_command(text)
+        if command:
+            text = f"{command} {rest}".strip()  # one spelling for everything below
+        mentioned = self.user in message.mentions
+        in_bot_channel = message.channel.id in self.config["channel_ids"]
+        if not (command or mentioned or in_bot_channel):
+            return  # outside the bot channels only text commands and @mentions are answered
+        text = text.strip()
+
+        if command == "!reset":
             self.memory.reset(message.channel.id)
             await message.reply("Memory for this channel cleared.", mention_author=False)
             return
-
-        if text.startswith(("！event", "/event ")):  # full-width ！, or a pasted /event line Discord sent as text
-            text = "!" + text[1:]
-        if text.split(" ", 1)[0].lower() == "!event" and message.guild is not None:  # works in any channel
-            parts = [p.strip() for p in re.split(r"[|｜]", text[len("!event"):])]
+        if command == "!event" and message.guild is not None:
+            parts = [p.strip() for p in re.split(r"[|｜]", rest)]
             if len(parts) < 4 or not all(parts[:4]):
                 await message.reply(EVENT_USAGE, mention_author=False)
                 return
@@ -487,14 +511,20 @@ class ChatBot(discord.Client):
                                                         *parts[:4], hours, " | ".join(parts[5:])),
                                 mention_author=False)
             return
-        mentioned = self.user in message.mentions
-        in_bot_channel = message.channel.id in self.config["channel_ids"]
-        if not (mentioned or in_bot_channel):
+        if command == "!poll":
+            # !poll question | answers | @members  (answers and members optional)
+            parts = [p.strip() for p in re.split(r"[|｜]", rest, maxsplit=2)] + ["", ""]
+            if not parts[0]:
+                await message.reply(POLL_USAGE, mention_author=False)
+                return
+            error, content, vote = self.make_poll(parts[0], parts[1], parts[2])
+            if error:
+                await message.reply(error, mention_author=False)
+            else:
+                await message.channel.send(content, poll=vote)
             return
-
-        for tag in (f"<@{self.user.id}>", f"<@!{self.user.id}>"):
-            text = text.replace(tag, "")
-        text = text.strip()
+        if command == "!ask":
+            text = rest  # a plain question, answered like any chat message
         command = text.split(" ", 1)[0].lower()
         if self.images and command == "!style":
             await message.reply(self.change_style(message.channel.id, text[len(command):]),

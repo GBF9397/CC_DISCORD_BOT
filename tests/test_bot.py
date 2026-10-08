@@ -475,3 +475,42 @@ async def test_bang_event_creates_an_event_from_one_line(mock_api):
     msg = FakeMessage("！event 电影夜 10-10 8:30pm", FakeChannel(CHANNEL), guild=FakeGuild())
     await bot.on_message(msg)
     assert msg.replies[0].startswith("Write it as")
+
+
+def test_text_command_accepts_bang_fullwidth_and_pasted_slash():
+    from bot import text_command
+    assert text_command("!draw a cat") == ("!draw", "a cat")
+    assert text_command("！Search 天气") == ("!search", "天气")
+    assert text_command("/refine make it night") == ("!refine", "make it night")
+    assert text_command("/shrug hello") == (None, "/shrug hello")
+    assert text_command("hello") == (None, "hello")
+
+
+async def test_text_commands_work_outside_bot_channels(mock_api):
+    bot = make_bot(mock_api.base_url)
+    msg = FakeMessage("／ask hi", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies == []  # unknown prefix: ignored outside bot channels
+    msg = FakeMessage("/ask hi there", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies == ["echo: user1: hi there"]
+    msg = FakeMessage("！reset", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies == ["Memory for this channel cleared."]
+
+
+async def test_bang_poll_posts_a_poll_from_one_line(mock_api):
+    bot = make_bot(mock_api.base_url)
+    sent = []
+    ch = FakeChannel(CHANNEL)
+
+    async def send(content=None, poll=None):
+        sent.append((content, poll))
+    ch.send = send
+    await bot.on_message(FakeMessage("!poll 今晚吃什么 | 炒饭，煎蛋 | <@11>", ch))
+    content, vote = sent[0]
+    assert vote.question == "今晚吃什么" and [a.text for a in vote.answers] == ["炒饭", "煎蛋"]
+    assert content == POLL_VOTERS + "<@11>"
+    msg = FakeMessage("!poll", FakeChannel(CHANNEL))
+    await bot.on_message(msg)
+    assert msg.replies[0].startswith("Write it as")

@@ -3,6 +3,7 @@
 Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. The model gets no tools; for current questions the bot searches the web (free DuckDuckGo, no API key) and passes the results to the model.
 
 ## How members use it
+Every command also works as one pasted message in any channel: start it with `!`, a full-width `！`, or `/` (a pasted `/draw a cat` line arrives as plain text and still works), e.g. `!draw a cat`, `！search 天气`, `!ask hi`, `!reset`, `!poll 今晚吃什么 | 炒饭，煎蛋 | @Daddy宏`, `!event 电影夜 | 10-10 | 8:30pm | 语音频道`. Outside the `BOT_CHANNEL_ID` channels the bot only answers these commands and @mentions.
 - `/ask question:<text>` - any member can ask (slash command).
 - `@Bot <text>` - mention the bot in any channel.
 - Any message in the channels listed in `BOT_CHANNEL_ID` (comma-separated).
