@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import discord
 
-from bot import NO_EVENT_PERMISSION, ChatBot, event_start, poll_answers
+from bot import NO_EVENT_PERMISSION, POLL_VOTERS, ChatBot, event_start, poll_answers
 
 BOT_ID, CHANNEL, BOT_CHANNEL, BOT_CHANNEL_2 = 999, 10, 20, 30
 
@@ -343,14 +343,14 @@ def test_poll_answers_split_and_default_to_yes_no():
 async def test_poll_command_posts_a_native_poll(mock_api):
     bot = make_bot(mock_api.base_url)
     interaction = slash_interaction()
-    await bot.tree.get_command("poll").callback(interaction, "gib是不是男同", "是 | 不是", 12, False)
+    await bot.tree.get_command("poll").callback(interaction, "gib是不是男同", "是 | 不是", "", 12, False)
     (content, ephemeral, vote), = interaction.response.sent
     assert vote.question == "gib是不是男同"
     assert [a.text for a in vote.answers] == ["是", "不是"]
-    assert vote.duration == timedelta(hours=12) and not vote.multiple and not ephemeral
+    assert vote.duration == timedelta(hours=12) and not vote.multiple and not ephemeral and content is None
 
     interaction = slash_interaction()
-    await bot.tree.get_command("poll").callback(interaction, "q", "|".join("abcdefghijk"), 24, False)
+    await bot.tree.get_command("poll").callback(interaction, "q", "|".join("abcdefghijk"), "", 24, False)
     assert interaction.response.sent[0][1] is True  # too many answers: only the asker is told
 
 
@@ -398,3 +398,42 @@ async def test_event_command_refuses_bad_or_past_times_and_missing_permission(mo
         await cmd(interaction, "x", date, time, "here", 2.0, "")
         assert interaction.response.sent[0][1] is True and guild.created is None
     assert interaction.response.sent[0][0] == NO_EVENT_PERMISSION
+
+
+async def test_poll_with_members_names_them_and_ends_once_they_all_voted(mock_api):
+    bot = make_bot(mock_api.base_url)
+    interaction = slash_interaction()
+    await bot.tree.get_command("poll").callback(interaction, "q", "", "<@11> <@!12> <@11>", 768, False)
+    content, _, vote = interaction.response.sent[0]
+    assert content == POLL_VOTERS + "<@11> <@12>" and vote.duration == timedelta(hours=768)
+
+    interaction = slash_interaction()
+    await bot.tree.get_command("poll").callback(interaction, "q", "", "Daddy宏", 768, False)
+    assert interaction.response.sent[0][1] is True  # names without @ are refused, privately
+
+    votes = {"是 Yes": [11], "不是 No": [99]}
+    ended = []
+
+    class Answer:
+        def __init__(self, ids):
+            self.ids = ids
+
+        async def voters(self):
+            for i in self.ids:
+                yield SimpleNamespace(id=i)
+
+    message = SimpleNamespace(id=1, author=SimpleNamespace(id=BOT_ID), content=content,
+                              poll=SimpleNamespace(answers=[Answer(v) for v in votes.values()],
+                                                   is_finalised=lambda: False))
+    async def end_poll():
+        ended.append(True)
+    async def fetch_message(mid):
+        return message
+    message.end_poll = end_poll
+    bot.get_channel = lambda cid: SimpleNamespace(fetch_message=fetch_message)
+    payload = SimpleNamespace(channel_id=CHANNEL, message_id=1)
+    await bot.on_raw_poll_vote_add(payload)
+    assert not ended  # member 12 hasn't voted; votes from others don't count
+    message.poll.answers[1].ids.append(12)
+    await bot.on_raw_poll_vote_add(payload)
+    assert ended == [True]

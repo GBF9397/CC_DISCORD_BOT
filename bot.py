@@ -35,6 +35,8 @@ ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done.
                   "你已经有一张在排队了，画完才能再点。")
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
+MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
+POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
 NO_EVENT_PERMISSION = ("I need the Create Events permission in this server to do that. "
                        "我在这个服务器没有「创建活动」权限，请管理员给我加上。")
 
@@ -288,10 +290,11 @@ class ChatBot(discord.Client):
         @self.tree.command(name="poll", description="Start a poll members vote on")
         @app_commands.describe(question="What to vote on",
                                options="Answers split by | , or /, e.g. '是 | 不是'; leave empty for yes/no",
-                               hours="How long voting stays open (1-768 hours, default 24)",
+                               members="Who votes, e.g. '@Daddy宏 @启胜': the poll ends once they all have",
+                               hours="Longest it stays open (1-768 hours, default 768 = 32 days, Discord's limit)",
                                multiple="Let members pick more than one answer")
-        async def poll(interaction: discord.Interaction, question: str, options: str = "",
-                       hours: app_commands.Range[int, 1, 768] = 24, multiple: bool = False):
+        async def poll(interaction: discord.Interaction, question: str, options: str = "", members: str = "",
+                       hours: app_commands.Range[int, 1, 768] = 768, multiple: bool = False):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -300,10 +303,17 @@ class ChatBot(discord.Client):
                 await interaction.response.send_message(
                     "A poll can have at most 10 answers. 投票最多 10 个选项。", ephemeral=True)
                 return
+            voters = list(dict.fromkeys(MEMBER_MENTION.findall(members)))
+            if members.strip() and not voters:
+                await interaction.response.send_message(
+                    "Pick members with @, e.g. @Daddy宏 @启胜. 请用 @ 选成员。", ephemeral=True)
+                return
             vote = discord.Poll(question=question[:300], duration=timedelta(hours=hours), multiple=multiple)
             for answer in answers:
                 vote.add_answer(text=answer)
-            await interaction.response.send_message(poll=vote)
+            # The voter list lives in the poll message itself, so nothing is kept and a restart loses nothing.
+            content = (POLL_VOTERS + " ".join(f"<@{v}>" for v in voters)) if voters else None
+            await interaction.response.send_message(content, poll=vote)
 
         @self.tree.command(name="event", description="Create a server event with a date, time and place")
         @app_commands.describe(name="What the event is", date="Date, e.g. 2026-10-10 or 10-10",
@@ -396,6 +406,23 @@ class ChatBot(discord.Client):
                 log.info("Answering every message in #%s", self.get_channel(channel_id))
         for guild in self.guilds:
             await self.learn_meanings(guild)
+
+    async def on_raw_poll_vote_add(self, payload):
+        """Ends a /poll that names its voters once every one of them has voted."""
+        channel = self.get_channel(payload.channel_id)
+        if channel is None:
+            return
+        message = await channel.fetch_message(payload.message_id)
+        if message.author.id != self.user.id or not message.content.startswith(POLL_VOTERS) \
+                or message.poll is None or message.poll.is_finalised():
+            return
+        wanted = {int(v) for v in MEMBER_MENTION.findall(message.content)}
+        voted = set()
+        for answer in message.poll.answers:
+            voted |= {u.id async for u in answer.voters()}
+        if wanted <= voted:
+            log.info("Every named member voted; ending poll %s", message.id)
+            await message.end_poll()
 
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars, %d attachments)",
