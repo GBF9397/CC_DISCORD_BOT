@@ -764,3 +764,18 @@ async def test_event_picker_creates_the_event_from_the_menus(mock_api):
     sent.clear()
     await picker.create(interaction)
     assert "already passed" in sent[0][0] and sent[0][2]  # only the maker sees the problem, menus stay
+
+
+async def test_chat_pictures_reach_lm_studio_as_png(mock_api):
+    # LM Studio can't read WebP ("'url' field must be a base64 encoded image"), so every picture goes as PNG.
+    import base64
+    import io
+    from PIL import Image
+    webp = io.BytesIO()
+    Image.new("RGB", (2000, 1000), "green").save(webp, "WEBP")
+    bot = make_bot(mock_api.base_url)
+    msg = FakeMessage("what is this", FakeChannel(BOT_CHANNEL), attachments=[FakeAttachment(webp.getvalue(), "image/webp")])
+    await bot.on_message(msg)
+    url = mock_api.requests[-1]["messages"][-1]["content"][1]["image_url"]["url"]
+    assert url.startswith("data:image/png;base64,")
+    assert Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))).size == (1024, 512)

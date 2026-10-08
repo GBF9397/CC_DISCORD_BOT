@@ -1,6 +1,7 @@
 """Model access, per-channel memory and reply splitting. No Discord code here."""
 import asyncio
 import base64
+import io
 import logging
 import os
 import random
@@ -9,11 +10,33 @@ from collections import defaultdict, deque
 from datetime import date
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
+from PIL import Image, ImageOps
 
 from search import is_fact_question
 
 log = logging.getLogger("bot")
 IMAGE_PROMPT_TIMEOUT = 300  # seconds Gemma may take to write a picture prompt; tried once, no retries
+MAX_PICTURE_SIDE = 1024  # every picture Gemma sees (and every upload ComfyUI redraws) is shrunk to this
+
+
+def shrink(data, mime):
+    """Any picture as (PNG, mime) at most MAX_PICTURE_SIDE wide or tall, upright, first frame only;
+    one Pillow can't read is passed on as it is. RAM only."""
+    try:
+        picture = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    except (OSError, ValueError):
+        return data, mime
+    picture.thumbnail((MAX_PICTURE_SIDE, MAX_PICTURE_SIDE))
+    out = io.BytesIO()
+    picture.save(out, "PNG")
+    return out.getvalue(), "image/png"
+
+
+async def image_part(data, mime):
+    """A picture as a chat message part LM Studio can read: it refuses WebP ("'url' field must be a
+    base64 encoded image"), so every picture goes as a PNG, which also keeps big uploads quick."""
+    data, mime = await asyncio.to_thread(shrink, data, mime)
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
 
 
 class TooSlow(Exception):
@@ -296,14 +319,13 @@ class Brain:
 
     async def describe(self, image, mime="image/png"):
         """A few words on what an emoji/sticker picture means, or "" if the model can't say."""
-        url = f"data:{mime};base64,{base64.b64encode(image).decode()}"
+        picture = await image_part(image, mime)
         async with self._lock:
             try:
                 resp = await self.client.chat.completions.create(
                     model=self.model, temperature=0.2,
                     messages=[{"role": "user", "content": [
-                        {"type": "text", "text": DESCRIBE_PROMPT},
-                        {"type": "image_url", "image_url": {"url": url}}]}],
+                        {"type": "text", "text": DESCRIBE_PROMPT}, picture]}],
                 )
             except (APIConnectionError, APITimeoutError, APIStatusError):
                 return ""
@@ -314,9 +336,7 @@ class Brain:
         images: (bytes, mime type) pairs shown with the instruction, never stored."""
         content = instruction
         if images:
-            content = [{"type": "text", "text": instruction}] + [
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
-                for data, mime in images]
+            content = [{"type": "text", "text": instruction}] + [await image_part(data, mime) for data, mime in images]
         try:
             # Once only: a retry would queue behind the slow request still running in LM Studio.
             resp = await self.client.with_options(timeout=IMAGE_PROMPT_TIMEOUT, max_retries=0).chat.completions.create(
@@ -353,11 +373,7 @@ class Brain:
             user_msg += LENGTH_NOTE.format(n=limit)
         if images:
             remembered += f" [sent {len(images)} image(s)]"
-            user_msg = [{"type": "text", "text": user_msg}] + [
-                {"type": "image_url",
-                 "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
-                for data, mime in images
-            ]
+            user_msg = [{"type": "text", "text": user_msg}] + [await image_part(data, mime) for data, mime in images]
         async with self._lock:
             messages = [{"role": "system", "content": SYSTEM_PROMPT + self.persona(channel_id)
                          + (UNFILTERED_NOTE if self.unfiltered else "") + extras}]

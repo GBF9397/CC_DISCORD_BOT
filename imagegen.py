@@ -22,10 +22,10 @@ from statistics import fmean
 from dataclasses import dataclass
 
 import aiohttp
-from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageEnhance, ImageFilter
 
 import core as brain_core
-from core import TooSlow
+from core import TooSlow, shrink  # shrink: uploads go to Gemma and ComfyUI as PNGs of at most 1024 px
 
 from search import image_search, web_search
 
@@ -125,7 +125,6 @@ LOOKUP = ("\n\nNow reply as asked above (do not reply SEARCH again). Draw only t
 TOO_SLOW = ("Sorry, Gemma took too long looking at that (over 5 minutes), so I stopped. Try again, maybe with "
             "fewer or simpler pictures. Gemma 看太久了（超过 5 分钟），已停止，请再试一次。")
 COUNTDOWN_EVERY = 15  # seconds between "giving up in ..." updates while Gemma writes a prompt
-MAX_PICTURE_SIDE = 1024  # uploads are shrunk to this before Gemma and ComfyUI see them
 
 
 def fade_colors(data):
@@ -142,19 +141,6 @@ def fade_colors(data):
     out = io.BytesIO()
     ImageChops.multiply(faded, Image.merge("RGB", (shade, shade, shade))).save(out, "PNG")
     return out.getvalue()
-
-
-def shrink(data, mime):
-    """Any picture as (PNG, mime) at most MAX_PICTURE_SIDE wide or tall, upright, first frame only;
-    one Pillow can't read is passed on as it is. RAM only."""
-    try:
-        picture = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
-    except (OSError, ValueError):
-        return data, mime
-    picture.thumbnail((MAX_PICTURE_SIDE, MAX_PICTURE_SIDE))
-    out = io.BytesIO()
-    picture.save(out, "PNG")
-    return out.getvalue(), "image/png"
 
 
 NOTHING_TO_REFINE = ("You have nothing to refine yet in this channel. Draw one first with /draw or !draw. "
