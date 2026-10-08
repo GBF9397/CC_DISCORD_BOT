@@ -3,6 +3,7 @@
 Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. The model gets no tools; for current questions the bot searches the web (free DuckDuckGo, no API key) and passes the results to the model.
 
 ## How members use it
+Every command also works as one pasted message in any channel: start it with `!`, a full-width `！`, or `/` (a pasted `/draw a cat` line arrives as plain text and still works), e.g. `!draw a cat`, `！search 天气`, `!ask hi`, `!reset`, `!poll 今晚吃什么 | 炒饭，煎蛋 | @Daddy宏`, `!event 电影夜 | 10-10 | 8:30pm | 语音频道`. Outside the `BOT_CHANNEL_ID` channels the bot only answers these commands and @mentions.
 - `/ask question:<text>` - any member can ask (slash command).
 - `@Bot <text>` - mention the bot in any channel.
 - Any message in the channels listed in `BOT_CHANNEL_ID` (comma-separated).
@@ -14,6 +15,9 @@ Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. The model g
 - `/edit image:<upload> changes:<text>` or `!edit <text>` with a picture attached - redraw an uploaded picture with the changes.
 - `/drawstyle style:<anime|realistic>` or `!style <anime|realistic>` - switch the drawing model for this channel.
 - `/reset` or `!reset` - forget this channel's conversation.
+- `/poll question:<text> options:<a | b | c> members:<@a @b>` - post a Discord poll (up to 10 answers split by `|`, `,`, `/`, `、` or full-width `，｜／`; leave `options` empty for 是/不是). With `members`, the bot pings them and ends the poll as soon as every one of them has voted (others can still vote, since Discord polls can't limit voters). `hours` sets how long it stays open: by default 1 day without `members`, 7 days with them. `multiple` lets members pick several answers. Needs no Gemma, so it works while the bot is drawing.
+- `/event name:<text> date:<2026-10-10 or 10-10> time:<20:30, 8:30pm or 晚上8:30> place:<text>` - create a server event (Discord's Events list) with optional `hours` (default 2) and `details`. The time is read in the bot PC's time zone; Discord shows it to each member in theirs. Or paste it as one message in any channel (`!event`, `！event` or `/event` all work): `!event 电影夜 | 10-10 | 8:30pm | 语音频道` (add `| hours | details` if wanted). Members click **Interested** on the event to get Discord's reminder. The bot needs the **Create Events** permission in that server.
+- `/status` - show how busy the PC is: bars for graphics card load and memory, CPU and RAM, with what's free (only the asker sees it). It refreshes about every 3 seconds for a minute, and works while pictures are being drawn.
 - The bot uses the server's own custom emoji (animated ones too) in its replies now and then, and, if `STICKERS=on` is in `.env` (off by default), once in a while sends one of the server's stickers. On startup it shows each emoji (and sticker, when on) picture to Gemma once to learn what it means (kept in RAM only), and it remembers the last 2 short messages where members used each one (RAM only, gone on restart), so it can pick one that fits the mood.
 - `/persona` - change the bot's personality in this channel: pick a `preset` (buddy, tsundere, wuxia, pirate, roast) or write your own with `custom`, or play a known character with `character` (e.g. `Ganyu Genshin Impact`): the bot searches the web for them and turns what it finds into a personality. With no options it shows the current one. Switching clears the channel's memory. Personalities live in RAM, so a restart goes back to buddy.
 
@@ -34,6 +38,9 @@ Two styles: `SD_CHECKPOINT` is `anime` (the default) and `SD_CHECKPOINT_REALISTI
 
 Setup: install ComfyUI and keep it running (it uses almost no graphics memory while idle), or put its `ComfyUI_windows_portable` folder in `COMFYUI_DIR` and the bot starts it in the background, with no window, the first time someone asks for a picture (it then stays running); put one model in its `models/checkpoints` folder, and put that file name in `SD_CHECKPOINT`. Use `IMAGE_SIZE=1024` for SDXL models, `512` for SD 1.5. The `lms` command must work in the bot's terminal. Pictures are never written to disk: ComfyUI sends each one straight to the bot over its websocket (the `SaveImageWebsocket` node, which ships with ComfyUI in `custom_nodes/websocket_image_save.py`), and the bot keeps it in RAM only until it is posted. Hard limits: no sexual pictures involving anyone who is or looks under 18, and no sexual or degrading pictures of real people.
 
+## Monitor window
+When the bot starts it opens a small always-on-top window with the same numbers as `/status`, updated every second. It runs as a second `python.exe` that closes when the bot stops (`Stop-Process -Name python` ends both). Put `MONITOR_WINDOW=off` in `.env` to leave it out. Graphics card readings come from `nvidia-smi`, which ships with the NVIDIA driver.
+
 ## Unfiltered mode (optional)
 Set `UNFILTERED_MODE=on` in `.env` and restart to loosen the bot's style: swearing, crude and dark humor, harsher roasts, mature topics, blunt opinions, and far fewer refusals or safety disclaimers. It is off by default. Hard limits stay: no sexual content involving minors, no real-world instructions for weapons or serious harm, no doxxing or harassing real people. Gemma has its own built-in caution, so a prompt can only loosen it so far; to go further, load a less filtered model in LM Studio and put its id in `LMSTUDIO_MODEL` (no code change). Keep anything sexual to Discord age-restricted channels.
 
@@ -49,7 +56,7 @@ Lines win over the bot's own guess and take effect on the next reply, no restart
 ## Setup (Windows)
 1. LM Studio: load `gemma4-12b-bionic-v2`, then `lms server start` (serves `http://localhost:1234/v1`).
 2. Discord Developer Portal: New Application > Bot > turn on **Message Content Intent** > Reset Token and copy it.
-3. OAuth2 > URL Generator: scopes `bot` and `applications.commands`; permissions Send Messages, Read Message History. Open the URL to invite the bot.
+3. OAuth2 > URL Generator: scopes `bot` and `applications.commands`; permissions Send Messages, Read Message History, Send Polls, Create Events. Open the URL to invite the bot.
 4. In this folder:
    ```
    py -3.12 -m venv .venv

@@ -7,7 +7,7 @@ from aiohttp import web
 import imagegen
 from bot import ALREADY_QUEUED, DRAWING_NOTICE, NO_PICTURE, NOTHING_TO_RECALL, QUEUED_NOTICE, RECALLED
 from imagegen import NOTHING_TO_REFINE, ImageMaker, blocked
-from tests.test_bot import BOT_CHANNEL, BOT_CHANNEL_2, FakeAttachment, FakeChannel, FakeMessage, make_bot
+from tests.test_bot import BOT_CHANNEL, BOT_CHANNEL_2, CHANNEL, FakeAttachment, FakeChannel, FakeMessage, make_bot
 
 PNG = b"\x89PNG fake"
 
@@ -528,3 +528,19 @@ def test_edit_node_is_copied_into_comfyui(tmp_path, mock_api):
     ImageMaker(make_bot(mock_api.base_url).brain, "http://x", {"anime": "m"}, comfy_dir=str(tmp_path))
     copied = tmp_path / "ComfyUI" / "custom_nodes" / "discord_bot_image.py"
     assert copied.read_text() == open(imagegen.NODE_FILE).read()
+
+
+async def test_recall_and_edit_work_with_full_width_bang_in_any_channel(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    other = FakeChannel(CHANNEL)  # not a bot channel
+    msg = FakeMessage("！recall", other)
+    await bot.on_message(msg)
+    assert msg.replies == [NOTHING_TO_RECALL]
+    mock_api.reply = "1girl, red hair"
+    edit = FakeMessage("！edit red hair", other, attachments=[FakeAttachment(b"PNGDATA", "image/png")])
+    await bot.on_message(edit)
+    await finish(bot)
+    assert edit.replies[1].filename == "image.png"
+    back = FakeMessage("/recall 1", other)
+    await bot.on_message(back)
+    assert back.replies == [RECALLED.format(number=1)]
