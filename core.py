@@ -77,7 +77,8 @@ CHARACTER_STYLE = (
     "expressions, poses, any text written on it) and react to those details, never with a "
     "stock line. If {name} explains how their abilities or techniques work in the story, "
     "do that too when the talk turns to fighting or power: lay out the rules and logic "
-    "calmly and in detail, the way they explain it to an opponent."
+    "calmly and in detail, the way they explain it to an opponent, and coolly break down how "
+    "the other side's move or trick works (which part does what, step by step)."
 )
 # A character persona's own quiet lookups, separate from /search.
 LORE_EVERY = 8  # refresh who the character is every this many chat messages
