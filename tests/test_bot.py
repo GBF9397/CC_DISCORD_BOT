@@ -403,7 +403,7 @@ async def test_event_command_refuses_bad_or_past_times_and_missing_permission(mo
 async def test_poll_with_members_names_them_and_ends_once_they_all_voted(mock_api):
     bot = make_bot(mock_api.base_url)
     interaction = slash_interaction()
-    await bot.tree.get_command("poll").callback(interaction, "q", "", "<@11> <@!12> <@11>", 768, False)
+    await bot.tree.get_command("poll").callback(interaction, "q", "", "<@11> <@!12> <@11>", None, False)
     content, _, vote = interaction.response.sent[0]
     assert content == POLL_VOTERS + "<@11> <@12>" and vote.duration == timedelta(hours=768)
 
@@ -437,3 +437,10 @@ async def test_poll_with_members_names_them_and_ends_once_they_all_voted(mock_ap
     message.poll.answers[1].ids.append(12)
     await bot.on_raw_poll_vote_add(payload)
     assert ended == [True]
+
+
+async def test_poll_without_members_defaults_to_one_day(mock_api):
+    bot = make_bot(mock_api.base_url)
+    interaction = slash_interaction()
+    await bot.tree.get_command("poll").callback(interaction, "q", "", "", None, False)
+    assert interaction.response.sent[0][2].duration == timedelta(hours=24)
