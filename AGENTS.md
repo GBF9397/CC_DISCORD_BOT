@@ -68,7 +68,7 @@ Every member-facing release gets a short Chinese announcement as a raw markdown 
 - Before trusting a test result, have Ep run `git log --oneline -1` and compare the commit id: once Ep tested on `main` for half an hour while the fixes were on the branch.
 - `Start-Process ... -RedirectStandardError bot-error.log` overwrites the log: read it before restarting. Read with `Select-String -Path bot-error.log -Pattern "Edit:|Refine:|Recolor" | Select-Object -Last 5`.
 - Branches drift behind main fast (other sessions push too); merge main in before telling Ep a branch is ready.
-- Discord limits: select menus hold 25 options; answer a button click within 3 s (defer first); a typed message can't open a form (needs a button); a public @mention is always visible; ephemeral messages exist only for slash commands.
+- Discord limits: no markdown tables (write lists, e.g. `**name** ─ /x ／ !x`); select menus hold 25 options; answer a button click within 3 s (defer first); a typed message can't open a form (needs a button); a public @mention is always visible; ephemeral messages exist only for slash commands.
 - `Get-Process python` shows **4 processes for one running bot**: the bot and the monitor window (`monitor.py` runs as its own process), each as a small venv launcher plus the real python. ComfyUI adds more once it starts. Two bots would show 8.
 - LM Studio can't read WebP (it answers 400 "'url' field must be a base64 encoded image"). Build every image part with `core.image_part()`, which converts to PNG; never put raw upload bytes in a data URL.
 - In `imagegen.py` the module `core` is imported as `brain_core`, because `imagegen.core()` is a tag helper.
