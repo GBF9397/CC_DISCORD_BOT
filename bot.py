@@ -291,10 +291,10 @@ class ChatBot(discord.Client):
         @app_commands.describe(question="What to vote on",
                                options="Answers split by | , or /, e.g. '是 | 不是'; leave empty for yes/no",
                                members="Who votes, e.g. '@Daddy宏 @启胜': the poll ends once they all have",
-                               hours="Longest it stays open (1-768 hours, default 768 = 32 days, Discord's limit)",
+                               hours="How long it stays open (1-768 hours; default 24, or 768 = 32 days when members are named)",
                                multiple="Let members pick more than one answer")
         async def poll(interaction: discord.Interaction, question: str, options: str = "", members: str = "",
-                       hours: app_commands.Range[int, 1, 768] = 768, multiple: bool = False):
+                       hours: app_commands.Range[int, 1, 768] = None, multiple: bool = False):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -308,6 +308,7 @@ class ChatBot(discord.Client):
                 await interaction.response.send_message(
                     "Pick members with @, e.g. @Daddy宏 @启胜. 请用 @ 选成员。", ephemeral=True)
                 return
+            hours = hours or (768 if voters else 24)
             vote = discord.Poll(question=question[:300], duration=timedelta(hours=hours), multiple=multiple)
             for answer in answers:
                 vote.add_answer(text=answer)
