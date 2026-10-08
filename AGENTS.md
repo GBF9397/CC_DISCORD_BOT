@@ -140,3 +140,13 @@ After a test, before any restart: `Select-String -Path bot-error.log -Pattern "E
 - `search.py` - `web_search`, `image_search`, `needs_search`, `is_fact_question`, backup engines.
 - `monitor.py` - always-on-top monitor window and stats used by `/status` (`MONITOR_WINDOW=off` disables).
 - `tests/` - pytest suite with `mock_lmstudio.py`; `README.md` documents member-facing behavior; `.env.example` lists all keys.
+
+## Open task: v1.4 release announcement (handed over 2026-10-08)
+- Owner of this task is now whichever session Ep is working with. The old project coordinator has retired.
+- Goal: give Ep, in chat, (a) the full v1.4 member announcement and (b) the full latest command list, each as one raw markdown code block, in Chinese.
+- Draft to start from: `docs/v1.4_release_draft.md` (written before the latest image/red-hair fixes and `!dm`; verify every command against the current code and README before finalizing).
+- Format: heading `# 🤖 Gemma 4 机器人 v1.4 更新`, one `##` section per feature, short point form, a `示例` per section. Use only examples Ep actually tested (so far: /poll 谁最帅 and !event 电影夜); for others write 用法 lines and ask Ep for test results to turn into examples. No tech jargon. Persona changes: one short section only (人设优化了, `/persona character 角色 作品`, old personas must be re-created).
+- Must cover: every command now has a one-line `!` / `！` form usable in any channel (fields separated by `|`); polls (`members` option @s people, ends when all have voted; default 1 day, 7 days with @members; creator-only 「结束」 button that reports current votes); events (`!event 名称 | 日期 | 时间 | 地点 [| 小时 | 说明]`, just `!event` opens a form, creator-only end button); `/status` (private live bars) and `!status` (public); `/comment` / `!comment` (reposts your words under your own name/avatar); chat fixes (no more cut-off replies, `:emoji` works); image `/refine`, `/recall`, `/edit` (and anything newer that is merged by then, e.g. estimated time, recolor fix). Include only features that are on main when you write it.
+- Command list: every command with its `/` form, `!` form and a one-line example.
+- Internal/infra changes (perf monitor window, logging, AGENTS.md) get no announcement.
+- PR #14 is merged; its follow-up work is on branch `claude/task-nb5ft9` (owned by Ep's current session).
