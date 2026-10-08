@@ -336,6 +336,7 @@ def slash_interaction(guild=None):
 def test_poll_answers_split_and_default_to_yes_no():
     assert poll_answers("是 | 不是") == ["是", "不是"]
     assert poll_answers("红，蓝、绿/黄,紫") == ["红", "蓝", "绿", "黄", "紫"]
+    assert poll_answers("ey gib｜ep hung／xuan") == ["ey gib", "ep hung", "xuan"]
     assert poll_answers("") == ["是 Yes", "不是 No"]
 
 

@@ -34,13 +34,13 @@ QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again 
 ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
                   "你已经有一张在排队了，画完才能再点。")
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
-POLL_SPLIT = re.compile(r"[|/,，、]")
+POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 NO_EVENT_PERMISSION = ("I need the Create Events permission in this server to do that. "
                        "我在这个服务器没有「创建活动」权限，请管理员给我加上。")
 
 
 def poll_answers(options):
-    """Splits '是 | 不是' (also / , ， 、) into poll answers; empty means a yes/no poll."""
+    """Splits '是 | 不是' (also / , ， 、 ｜ ／) into poll answers; empty means a yes/no poll."""
     answers = [a.strip()[:55] for a in POLL_SPLIT.split(options or "") if a.strip()]
     return answers or ["是 Yes", "不是 No"]
 
