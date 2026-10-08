@@ -6,6 +6,7 @@ draws, then frees its model; Gemma comes back (lms load). No Discord code here.
 import asyncio
 import base64
 import filecmp
+import io
 import json
 import logging
 import os
@@ -21,6 +22,10 @@ from statistics import fmean
 from dataclasses import dataclass
 
 import aiohttp
+from PIL import Image, ImageOps
+
+import core as brain_core
+from core import TooSlow
 
 from search import image_search, web_search
 
@@ -106,6 +111,25 @@ LOOKUP = ("\n\nNow reply as asked above (do not reply SEARCH again). Draw only t
           "if the web text shows it came out before 2025. Otherwise leave out its name and series "
           "entirely, or the drawing model swaps in another character it knows from that series.\n\n"
           "[What the web says about it]\n{results}")
+TOO_SLOW = ("Sorry, Gemma took too long looking at that (over 5 minutes), so I stopped. Try again, maybe with "
+            "fewer or simpler pictures. Gemma 看太久了（超过 5 分钟），已停止，请再试一次。")
+COUNTDOWN_EVERY = 15  # seconds between "giving up in ..." updates while Gemma writes a prompt
+MAX_PICTURE_SIDE = 1024  # uploads are shrunk to this before Gemma and ComfyUI see them
+
+
+def shrink(data, mime):
+    """Any picture as (PNG, mime) at most MAX_PICTURE_SIDE wide or tall, upright, first frame only;
+    one Pillow can't read is passed on as it is. RAM only."""
+    try:
+        picture = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    except (OSError, ValueError):
+        return data, mime
+    picture.thumbnail((MAX_PICTURE_SIDE, MAX_PICTURE_SIDE))
+    out = io.BytesIO()
+    picture.save(out, "PNG")
+    return out.getvalue(), "image/png"
+
+
 NOTHING_TO_REFINE = ("You have nothing to refine yet in this channel. Draw one first with /draw or !draw. "
                      "你在这个频道还没有画过图，先用 /draw 或 !draw 画一张。")
 NEGATIVE = "lowres, bad anatomy, bad hands, extra fingers, blurry, watermark, text, signature"
@@ -240,7 +264,8 @@ class ImageMaker:
         this member already has one waiting or being drawn. Raises DrawError if there is
         nothing to refine. deliver(png, error) is awaited
         with the PNG bytes or an error text once this picture is done; progress(percent),
-        if given, is awaited every 10% while ComfyUI draws it. source: picture bytes to
+        if given, is awaited every 10% while ComfyUI draws it, and progress(text) with a countdown
+        while Gemma writes its prompt. source: picture bytes to
         redraw with the change (/edit), kept in RAM only; reference: a second picture whose
         character takes over the first."""
         if user_id in self.waiting:
@@ -299,6 +324,25 @@ class ImageMaker:
             fmean(t[f"prompt:{self._kind(j)}"]) if t[f"prompt:{self._kind(j)}"] else any_prompt for j in self.queue
         ) + len(self.queue) * draw
 
+    async def _ask(self, job, instruction, images):
+        """Gemma writes the prompt while the member's notice counts down to when the bot gives up."""
+        async def countdown():
+            deadline = time.monotonic() + brain_core.IMAGE_PROMPT_TIMEOUT
+            while True:
+                await asyncio.sleep(COUNTDOWN_EVERY)
+                minutes, seconds = divmod(max(0, round(deadline - time.monotonic())), 60)
+                try:
+                    await job.progress(f"🧠 Gemma is writing the prompt, giving up in {minutes} min {seconds} sec. "
+                                       f"Gemma 正在写提示，最多再等 {minutes} 分 {seconds} 秒。")
+                except Exception as e:
+                    log.warning("Could not show the countdown: %s", type(e).__name__)
+        ticker = asyncio.create_task(countdown()) if job.progress else None
+        try:
+            return await self.brain.image_prompt(instruction, images)
+        finally:
+            if ticker:
+                ticker.cancel()
+
     def _refine_checkpoint(self, job, old):
         """A refine keeps its picture's model, unless the change starts with a style name or
         the channel switched style after the picture was drawn."""
@@ -324,26 +368,34 @@ class ImageMaker:
                 # Gemma sees the picture, so a refine keeps details the prompt never named.
                 images = [(old.png, "image/png")]
             elif job.source:
+                # Big uploads slow Gemma down a lot; both Gemma and ComfyUI get the small copy.
+                job.source, job.source_type = await asyncio.to_thread(shrink, job.source, job.source_type)
                 job.seed, job.strength = random.randrange(2**32), SWAP_STRENGTH if job.reference else EDIT_STRENGTH
                 instruction = (SWAP_NOTE if job.reference else "") + EDITOR.format(
                     request=job.request, style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
                 images = [(job.source, job.source_type)]
                 if job.reference:
-                    images.append((job.reference, job.reference_type))
+                    images.append(await asyncio.to_thread(shrink, job.reference, job.reference_type))
                     job.reference = None  # only Gemma needs it; ComfyUI redraws picture 1
             else:
                 job.seed = random.randrange(2**32)
                 instruction = PROMPT_WRITER.format(request=job.request,
                                                    style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
             started = time.monotonic()
-            prompt = await self.brain.image_prompt(instruction, images)
-            if prompt and prompt.startswith("SEARCH:"):  # one lookup per picture, results never stored
-                name = prompt[len("SEARCH:"):].strip()
-                results = await web_search(name + " character appearance hair outfit")
-                found = await image_search(name + " official art", max_results=5)
-                log.info("Looked up a named subject on the web (%d characters, %d pictures)", len(results), len(found))
-                prompt = await self.brain.image_prompt(
-                    instruction + LOOKUP.format(results=results or "(no results)"), images + found)
+            try:
+                prompt = await self._ask(job, instruction, images)
+                if prompt and prompt.startswith("SEARCH:"):  # one lookup per picture, results never stored
+                    name = prompt[len("SEARCH:"):].strip()
+                    results = await web_search(name + " character appearance hair outfit")
+                    found = await image_search(name + " official art", max_results=5)
+                    log.info("Looked up a named subject on the web (%d characters, %d pictures)", len(results), len(found))
+                    found = [await asyncio.to_thread(shrink, data, mime) for data, mime in found]
+                    prompt = await self._ask(job, instruction + LOOKUP.format(results=results or "(no results)"),
+                                             images + found)
+            except TooSlow:
+                log.warning("Gemma took over %d s to write a picture prompt", brain_core.IMAGE_PROMPT_TIMEOUT)
+                await self._deliver(job.deliver, job.user_id, None, TOO_SLOW)
+                continue
             if prompt is not None:
                 took = time.monotonic() - started
                 self.timings["prompt"].append(took)
