@@ -552,3 +552,58 @@ async def test_bare_edit_explains_itself_instead_of_chatting(mock_api, comfy, ev
     msg = FakeMessage("!edit", FakeChannel(CHANNEL))
     await bot.on_message(msg)
     assert msg.replies == [EDIT_USAGE] and not mock_api.requests
+
+
+async def test_big_pictures_are_shrunk_for_gemma_and_comfyui(mock_api, comfy, events):
+    import base64
+    import io
+    from PIL import Image
+    big = io.BytesIO()
+    Image.new("RGB", (3000, 1500), "red").save(big, "JPEG")
+    bot = image_bot(mock_api.base_url, comfy.url)
+    mock_api.reply = "1girl, red background"
+    msg = FakeMessage("!edit make it blue", FakeChannel(BOT_CHANNEL), attachments=[FakeAttachment(big.getvalue(), "image/jpeg")])
+    await bot.on_message(msg)
+    await finish(bot)
+    seen = mock_api.requests[-1]["messages"][0]["content"][1]["image_url"]["url"]
+    assert seen.startswith("data:image/png;base64,")
+    assert Image.open(io.BytesIO(base64.b64decode(seen.split(",", 1)[1]))).size == (1024, 512)
+    sent = base64.b64decode(comfy.jobs[0]["8"]["inputs"]["image"])
+    assert Image.open(io.BytesIO(sent)).size == (1024, 512)  # ComfyUI gets the small one too
+
+
+async def test_slow_gemma_gives_up_once_with_a_countdown(mock_api, comfy, events, monkeypatch):
+    import core
+    from imagegen import TOO_SLOW
+    monkeypatch.setattr(core, "IMAGE_PROMPT_TIMEOUT", 0.3)
+    monkeypatch.setattr(imagegen, "COUNTDOWN_EVERY", 0.1)
+    mock_api.delay = 0.5
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "model.safetensors"})
+    notes, done = [], asyncio.get_running_loop().create_future()
+
+    async def deliver(png, error):
+        done.set_result((png, error))
+
+    async def progress(update):
+        notes.append(update)
+    maker.submit("a cat", 1, 1, deliver, progress=progress)
+    assert await done == (None, TOO_SLOW)
+    assert len(mock_api.requests) == 1  # no retries piling up on LM Studio
+    assert notes and all(isinstance(n, str) and "最多再等" in n for n in notes)
+
+
+async def test_countdown_text_shows_under_the_drawing_notice(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    edits = []
+
+    async def edit(text):
+        edits.append(text)
+
+    async def send(text=None, file=None):
+        pass
+    bot.queue_picture("a cat", 1, 1, False, send, edit)
+    job = bot.images.queue[0]
+    await job.progress("🧠 最多再等 4 分 45 秒")
+    await job.progress(50)
+    assert edits == [f"{DRAWING_NOTICE}\n🧠 最多再等 4 分 45 秒", f"{DRAWING_NOTICE}\n▓▓▓▓▓░░░░░ 50%"]
+    await finish(bot)

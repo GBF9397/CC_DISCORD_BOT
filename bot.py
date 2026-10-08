@@ -388,8 +388,11 @@ class ChatBot(discord.Client):
             else:
                 await send(error)
 
-        async def progress(percent):
-            await edit(f"{DRAWING_NOTICE}\n{'▓' * (percent // 10)}{'░' * (10 - percent // 10)} {percent}%")
+        async def progress(update):  # a percentage while ComfyUI draws, or a line of text before that
+            if isinstance(update, str):
+                await edit(f"{DRAWING_NOTICE}\n{update}")
+            else:
+                await edit(f"{DRAWING_NOTICE}\n{'▓' * (update // 10)}{'░' * (10 - update // 10)} {update}%")
 
         try:
             ahead = self.images.submit(request, channel_id, user_id, deliver, refine, progress, source,

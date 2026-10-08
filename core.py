@@ -13,6 +13,11 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from search import is_fact_question
 
 log = logging.getLogger("bot")
+IMAGE_PROMPT_TIMEOUT = 300  # seconds Gemma may take to write a picture prompt; tried once, no retries
+
+
+class TooSlow(Exception):
+    """Gemma took longer than IMAGE_PROMPT_TIMEOUT to write a picture prompt."""
 
 SYSTEM_PROMPT = (
     "You are a member of a Discord server chatting with friends, not a customer-service "
@@ -313,11 +318,14 @@ class Brain:
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
                 for data, mime in images]
         try:
-            resp = await self.client.chat.completions.create(
+            # Once only: a retry would queue behind the slow request still running in LM Studio.
+            resp = await self.client.with_options(timeout=IMAGE_PROMPT_TIMEOUT, max_retries=0).chat.completions.create(
                 model=self.model, temperature=0.7,
                 messages=[{"role": "user", "content": content}],
             )
-        except (APIConnectionError, APITimeoutError, APIStatusError):
+        except APITimeoutError:
+            raise TooSlow from None
+        except (APIConnectionError, APIStatusError):
             return None
         return " ".join((resp.choices[0].message.content or "").split()) or None
 
