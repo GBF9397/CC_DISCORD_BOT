@@ -13,6 +13,7 @@ def fake_search(monkeypatch, results=RESULTS):
             raise results
         return results
     monkeypatch.setattr(search, "_search", _search)
+    monkeypatch.setattr(search, "_backup_search", _search)  # no real network in tests
     return calls
 
 
@@ -145,3 +146,13 @@ async def test_image_search_failure_gives_no_pictures(monkeypatch):
         raise RuntimeError("blocked")
     monkeypatch.setattr(search, "_images", boom)
     assert await search.image_search("claret") == []
+
+
+async def test_backup_engines_when_first_search_finds_nothing(monkeypatch):
+    def empty(query, max_results):
+        raise RuntimeError("no results")
+    monkeypatch.setattr(search, "_search", empty)
+    monkeypatch.setattr(search, "_backup_search", lambda q, n: [{"title": "泡泡", "href": "h", "body": "b"}])
+    assert "泡泡" in await search.web_search("Sunna 绝区零 宠物")
+    monkeypatch.setattr(search, "_backup_search", lambda q, n: [])
+    assert await search.web_search("nothing") == ""
