@@ -93,8 +93,8 @@ After a test, before any restart: `Select-String -Path bot-error.log -Pattern "E
 | # | Try | Pass when | Status |
 |---|---|---|---|
 | 1 | `/edit 把头发改成红色` with official Ganyu art | hair red, horns kept, pose close; log `Edit: SIZE big` + `Recolor: ... redrawing 60%` | FAILED 10-08 without ControlNet (60%: white hair with red streaks; 75%: red hair but cat ears); solved by #14 |
-| 2 | `!refine` 5-6 rounds (red hair, then 戴上帽子, 背景改成晚上, ...) | each round changes only what was asked; earlier changes stay | not tested |
-| 3 | draw, `!refine 戴上帽子` (say you don't like it), `!recall`, then `!refine 戴上帽子` again | `!recall` drops the hat picture and shows only the one before ("已撤回最新那张…"); the second refine gives a different picture, not the dropped one; at the first picture `!recall` says 没有可以撤回的了 | 10-08 21:3x: old version cycled through identical rejected pictures (recall kept them and refine reused the seed); changed to undo + fresh seed, not tested |
+| 2 | `!refine` 5-6 rounds (red hair, then 戴上帽子, 背景改成晚上, ...) | each round changes only what was asked; earlier changes stay | passed 10-08 (several rounds of refine/undo on the red-hair picture; style drift Ep will steer with more words) |
+| 3 | draw, `!refine 戴上帽子` (say you don't like it), `!recall`, then `!refine 戴上帽子` again | `!recall` drops the hat picture and shows only the one before ("已撤回最新那张…"); the second refine gives a different picture, not the dropped one; at the first picture `!recall` says 没有可以撤回的了 | passed 10-08 ~22:00 on `f388ae5`: each undo dropped the newest and showed only the one before; refines after an undo came out different each time (fresh seed); at the first picture `/recall` said 没有可以撤回的了. Ep: 基本都对了 |
 | 4 | two members `!refine` at the same time | each gets their own picture changed | not tested (Ep, at home) |
 | 5 | `!draw realistic 一个女生` | realistic photo style | passed 10-08 (natural photo, ~1 min) |
 | 6 | `!dmdraw 一只猫` | your message disappears; channel shows only "画画中（私人请求）" + countdown/progress, no name; DM "收到…" then the picture by DM | passed 10-08 once Ep gave the bot Manage Messages (before that the message stayed; now the bot DMs CANT_HIDE in that case) |
