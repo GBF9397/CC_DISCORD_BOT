@@ -56,13 +56,22 @@ SAFETY = (
     "character, person, place, product or artwork (a proper name, even one you think you know), "
     "reply only SEARCH: <its name and series>."
 )
+# How big a change is decides how much of the old picture is redrawn (REFINE_STRENGTH).
+SIZE_RULES = (
+    "SIZE: small for expression, lighting or the color of a small thing; medium for hairstyle, eye "
+    "color, clothes or background; big for hair color, pose, framing, or adding or removing someone; "
+    "new to draw it again from scratch. When the change goes against how a named character normally "
+    "looks (like another hair color), leave out the character's name and series tags and describe the "
+    "looks instead, since the drawing model always draws a named character with their usual looks, "
+    "and make it at least big. "
+)
 # For /edit: the change wins over what the uploaded picture shows.
 CHANGE_RULES = (
     "The change always wins over the picture: leave out everything it contradicts, put the changed "
     "tags first with weight 1.3, like (medium hair:1.3), and keep everything else. " + TAG_WORDS +
     "Reply with only the new prompt, comma-separated English tags, under 60 words, {style} "
-    "then on the same line AVOID: and the tags the change got rid of (like AVOID: short hair, backlighting). "
-    + SAFETY
+    "then on the same line AVOID: and the tags the change got rid of (like AVOID: short hair, backlighting), "
+    "then SIZE: and how big the change is. " + SIZE_RULES + SAFETY
 )
 # For /refine: Gemma lists only the edits and the code applies them, so every tag the member
 # didn't mention stays exactly as it was, however many rounds they refine.
@@ -72,11 +81,8 @@ REFINER = (
     "ADD: medium hair REMOVE: short hair, bob cut AVOID: SIZE: medium\n"
     "ADD: the new tags the change needs. REMOVE: tags from the list above, copied exactly, that the "
     "change replaces or contradicts. AVOID: things the change gets rid of that are not in the list "
-    "(no backlight means AVOID: backlighting). SIZE: small for expression, lighting or the color of a "
-    "small thing; medium for hair (its color too), eye color, clothes or background, and at least "
-    "medium when the change goes against how a named character normally looks; big for pose, "
-    "framing, or adding or removing someone; new to "
-    "draw it again from scratch. Every tag you don't remove stays exactly as it is, so only touch "
+    "(no backlight means AVOID: backlighting). " + SIZE_RULES.replace("leave out", "REMOVE") +
+    "Every tag you don't remove stays exactly as it is, so only touch "
     "what the change asks for. " + TAG_WORDS + "{style} " + SAFETY + "\n\n[Change]\n{request}"
 )
 # For /edit: the member's uploaded picture is redrawn by the drawing model with the change.
@@ -145,6 +151,7 @@ SWAP_STRENGTH = 0.75  # more for a new character, since hair and face have to ch
 NODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_node.py")
 EDIT_NODE = "BotLoadImageBase64"  # in comfy_node.py, copied into ComfyUI's custom_nodes
 
+SIZE_WORD = re.compile(r"\bSIZE:\s*(\w+)")
 EDIT_WORDS = re.compile(r"\b(ADD|REMOVE|AVOID|SIZE):\s*(.*?)(?=\s*\b(?:ADD|REMOVE|AVOID|SIZE):|$)")
 WEIGHTED = re.compile(r"^\((.*?)(?::[\d.]+)?\)$")
 # How much of the last picture a /refine redraws (1.0 = draw again with the same seed). Every asked-for
@@ -360,7 +367,7 @@ class ImageMaker:
         jobs = []
         while self.queue:
             job = self.queue.popleft()
-            images = []
+            images, swap = [], bool(job.reference)
             if job.refine:
                 key = (job.channel_id, job.user_id)
                 old = self.versions[key][self.base[key]]
@@ -411,9 +418,13 @@ class ImageMaker:
                 if job.refine and EDIT_WORDS.search(prompt):
                     self._apply_edits(job, old, prompt)
                 else:  # a whole prompt (a refine whose reply ignored the edit format starts over too)
-                    text, _, avoid = prompt.partition("AVOID:")
+                    size = SIZE_WORD.search(prompt)
+                    text, _, avoid = SIZE_WORD.sub("", prompt).partition("AVOID:")
                     job.tags, job.negative = split_tags(text), split_tags(avoid)
                     job.prompt = ", ".join(job.tags)
+                    if job.source and not job.refine and not swap and size:  # a one-picture /edit
+                        job.strength = REFINE_STRENGTH.get(size[1].lower(), EDIT_STRENGTH)
+                        log.info("Edit: SIZE %s, redrawing %d%%", size[1].lower(), job.strength * 100)
                 if blocked(job.prompt):
                     await self._deliver(job.deliver, job.user_id, None, "Sorry, I won't draw that.")
                     continue

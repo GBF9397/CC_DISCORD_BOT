@@ -667,3 +667,17 @@ async def test_countdown_text_shows_under_the_drawing_notice(mock_api, comfy, ev
     await job.progress(50)
     assert edits == [f"{DRAWING_NOTICE}\n🧠 最多再等 4 分 45 秒", f"{DRAWING_NOTICE}\n▓▓▓▓▓░░░░░ 50%"]
     await finish(bot)
+
+
+async def test_edit_redraws_as_much_as_gemma_says_the_change_needs(mock_api, comfy, events):
+    bot = image_bot(mock_api.base_url, comfy.url)
+    mock_api.reply = "1girl, (red hair:1.3), horns, starry sky AVOID: blue hair, ganyu (genshin impact) SIZE: big"
+    msg = FakeMessage("!edit 把头发改成红色", FakeChannel(BOT_CHANNEL), attachments=[FakeAttachment(b"PNG", "image/png")])
+    await bot.on_message(msg)
+    await finish(bot)
+    job = comfy.jobs[0]
+    assert job["5"]["inputs"]["denoise"] == 0.75
+    assert job["2"]["inputs"]["text"] == "1girl, (red hair:1.3), horns, starry sky"
+    assert "blue hair, ganyu (genshin impact)" in job["3"]["inputs"]["text"] and "SIZE" not in job["3"]["inputs"]["text"]
+    asked = mock_api.requests[-1]["messages"][0]["content"][0]["text"]
+    assert "big for hair color" in asked and "leave out the character's name" in asked
