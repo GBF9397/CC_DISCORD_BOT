@@ -27,6 +27,16 @@ CDN = "https://cdn.discordapp.com"
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):(\d+)>")
 DRAWING_NOTICE = "🎨 Drawing... I'm offline until it's done. 画画中，画完才回来。"
 DONE_NOTICE = "🎨 Done! 画好了！"
+# !dmdraw, !dmedit, !dmrefine, !dmrecall: the picture only goes by DM and the channel sees no name.
+PRIVATE = 0  # history key for private pictures: one per member, apart from every channel's (no channel id is 0)
+DM_COMMANDS = {"!dmdraw": "!draw", "!dmedit": "!edit", "!dmrefine": "!refine", "!dmrecall": "!recall"}
+PRIVATE_NOTICE = "🎨 Drawing a private request... I'm offline until it's done. 画画中（私人请求），画完才回来。"
+DM_ACK = "Got it, your picture will arrive here. 收到，画好会发到这里。"
+DM_STARTED = "Started; the picture will come by DM. 开始画了，画好私信给你。"
+DM_FAILED = ("I can't send you private messages. Allow DMs from server members, then try again. "
+             "我私信不了你，请在隐私设置打开「允许服务器成员私信」再试。")
+DM_USAGE = ("Write what to draw or change after the command, e.g. !dmdraw 一只猫. "
+            "请在指令后写要画或要改的内容，例如 !dmdraw 一只猫。")
 FIRST_TIMING = "⏱️ First picture since I started, timing it; estimates start with the next one. 第一张图，计时中，下一张起会显示预计时间。"
 # Added to the system prompt when drawing is on, so Gemma stops saying it can't make pictures.
 DRAW_HINT = ("\n\nThis bot can draw pictures, but not in a normal reply: if someone asks you to draw "
@@ -55,7 +65,7 @@ NO_COMMENT_PERMISSION = ("I need the Manage Webhooks permission in this channel 
 # Text commands work in every channel, and also when typed with a full-width ！ or pasted as a /name line
 # (Discord sends a pasted slash command as plain text). Add new ! commands here.
 TEXT_COMMANDS = {"!ask", "!reset", "!draw", "!refine", "!recall", "!edit", "!style", "!search", "!event", "!poll",
-                 "!status", "!comment"}
+                 "!status", "!comment", "!dmdraw", "!dmedit", "!dmrefine", "!dmrecall"}
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
@@ -376,6 +386,7 @@ class ChatBot(discord.Client):
 
     def is_draw_request(self, content):
         command, rest = text_command(content.replace(f"<@{self.user.id}>", "").replace(f"<@!{self.user.id}>", ""))
+        command = DM_COMMANDS.get(command, command)  # private ones go through too
         return bool(self.images) and (command == "!recall" or (bool(rest) and command in ("!draw", "!refine", "!edit")))
 
     def recall(self, channel_id, user_id, number):
@@ -392,10 +403,12 @@ class ChatBot(discord.Client):
         return RECALLED.format(number=number), [discord.File(io.BytesIO(png), f"{number}.png")]
 
     def queue_picture(self, request, channel_id, user_id, refine, send, edit, source=None, source_type=None,
-                      reference=None, reference_type=None):
+                      reference=None, reference_type=None, private=False):
         """Queues a picture; send(text) / send(file=...) posts the result later, and
         edit(text) updates the notice with the drawing progress.
-        Returns the notice to post now. The picture stays in RAM."""
+        Returns the notice to post now. The picture stays in RAM. A private picture goes into the
+        member's private history, keeps channel_id's drawing style, and its notice names no one."""
+        header = PRIVATE_NOTICE if private else DRAWING_NOTICE
         async def deliver(png, error):
             if png:
                 await send(file=discord.File(io.BytesIO(png), "image.png"))
@@ -404,20 +417,62 @@ class ChatBot(discord.Client):
 
         async def progress(update):  # a percentage while ComfyUI draws, or a line of text before that
             if isinstance(update, str):
-                await edit(f"{DRAWING_NOTICE}\n{update}")
+                await edit(f"{header}\n{update}")
             else:
-                await edit(f"{DRAWING_NOTICE}\n{'▓' * (update // 10)}{'░' * (10 - update // 10)} {update}%")
+                await edit(f"{header}\n{'▓' * (update // 10)}{'░' * (10 - update // 10)} {update}%")
 
         try:
-            ahead = self.images.submit(request, channel_id, user_id, deliver, refine, progress, source,
-                                       source_type or "image/png", reference, reference_type or "image/png")
+            ahead = self.images.submit(request, PRIVATE if private else channel_id, user_id, deliver, refine, progress,
+                                       source, source_type or "image/png", reference, reference_type or "image/png",
+                                       style_channel=channel_id)
         except DrawError as e:
             return str(e)
         if ahead is None:
             return ALREADY_QUEUED
         log.info("Picture queued, %d ahead", ahead)
-        notice = DRAWING_NOTICE if ahead == 0 else QUEUED_NOTICE.format(ahead=ahead)
+        notice = header if ahead == 0 else QUEUED_NOTICE.format(ahead=ahead)
         return f"{notice}\n{eta_text(self.images.estimate())}"
+
+    async def private_picture(self, message, command, rest):
+        """!dmdraw / !dmedit / !dmrefine / !dmrecall (command is the public name): like the public ones, but
+        the picture only goes by DM, the request is deleted from the channel, and the channel only sees a
+        notice that names no one. If the member can't get DMs, nothing is drawn."""
+        uploads = [(await a.read(), a.content_type.split(";")[0]) for a in message.attachments  # RAM only,
+                   if (a.content_type or "").split(";")[0] in IMAGE_TYPES][:2]  # read before the delete
+        try:
+            dm = await message.author.create_dm()
+            await dm.send(DM_ACK)
+        except discord.HTTPException:
+            await message.reply(DM_FAILED, mention_author=False)
+            return
+        if message.guild is not None and message.channel.permissions_for(message.guild.me).manage_messages:
+            await message.delete()
+        if command == "!recall":
+            text, files = self.recall(PRIVATE, message.author.id, int(rest) if rest.isdigit() else None)
+            await dm.send(text, files=files)
+            return
+        if not rest or (command == "!edit" and not uploads):
+            await dm.send(DM_USAGE if not rest else NO_PICTURE)
+            return
+        (source, source_type), (reference, reference_type) = (uploads + [(None, None)] * 2)[:2]
+
+        async def send(text=None, file=None):
+            if file:
+                await dm.send(DONE_NOTICE, file=file)
+            else:
+                await dm.send(text)
+        notices = []
+
+        async def edit(text):
+            if notices:
+                await notices[0].edit(content=text)
+
+        notice = self.queue_picture(rest, message.channel.id, message.author.id, command == "!refine", send, edit,
+                                    source, source_type, reference, reference_type, private=True)
+        if notice.startswith("🎨"):
+            notices.append(await message.channel.send(notice))
+        else:  # already queued, nothing to refine: only the member hears it
+            await dm.send(notice)
 
     async def status_text(self):
         stats = await asyncio.to_thread(monitor.read, 0.5)
@@ -719,7 +774,7 @@ class ChatBot(discord.Client):
         if self.images is None:
             return
 
-        async def draw_command(interaction, request, refine, image=None, character=None):
+        async def draw_command(interaction, request, refine, image=None, character=None, private=False):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
@@ -738,20 +793,39 @@ class ChatBot(discord.Client):
                     return
                 reference = await character.read()  # RAM only
             caption = f"{interaction.user.mention}: {request[:200]}"
+            dm, notices = None, []
+            if private:  # the picture goes by DM, so make sure one gets through before drawing
+                try:
+                    dm = await interaction.user.create_dm()
+                    await dm.send(DM_ACK)
+                except discord.HTTPException:
+                    await interaction.response.send_message(DM_FAILED, ephemeral=True)
+                    return
 
             async def send(text=None, file=None):
                 # The channel, not the interaction: its token expires after 15 minutes in the queue.
-                if file:
+                if dm:
+                    await (dm.send(DONE_NOTICE, file=file) if file else dm.send(text))
+                elif file:
                     await interaction.channel.send(caption, file=file)
                 else:
                     await interaction.channel.send(f"{interaction.user.mention} {text}")
 
             async def edit(text):
-                await interaction.edit_original_response(content=text)
+                if not private:
+                    await interaction.edit_original_response(content=text)
+                elif notices:
+                    await notices[0].edit(content=text)
 
             notice = self.queue_picture(request, interaction.channel_id, interaction.user.id, refine, send, edit,
-                                        source, source_type, reference, reference_type)
-            await interaction.response.send_message(notice, ephemeral=not notice.startswith("🎨"))  # refusals only to the asker
+                                        source, source_type, reference, reference_type, private=private)
+            if not private:
+                await interaction.response.send_message(notice, ephemeral=not notice.startswith("🎨"))  # refusals only to the asker
+                return
+            started = notice.startswith("🎨")
+            await interaction.response.send_message(DM_STARTED if started else notice, ephemeral=True)
+            if started:  # an unnamed notice, so members know why the bot is quiet
+                notices.append(await interaction.channel.send(notice))
 
         @self.tree.command(name="draw", description="Draw a picture (Gemma goes offline until all pictures are done)")
         @app_commands.describe(request="What to draw; start with anime or realistic to pick the style")
@@ -769,6 +843,37 @@ class ChatBot(discord.Client):
         async def edit(interaction: discord.Interaction, image: discord.Attachment, changes: str,
                        character: discord.Attachment = None):
             await draw_command(interaction, changes, refine=False, image=image, character=character)
+
+        @self.tree.command(name="dmdraw", description="Draw a picture only you get, by DM")
+        @app_commands.describe(request="What to draw; start with anime or realistic to pick the style")
+        async def dmdraw(interaction: discord.Interaction, request: str):
+            await draw_command(interaction, request, refine=False, private=True)
+
+        @self.tree.command(name="dmrefine", description="Change your last private picture (or the one /dmrecall picked)")
+        @app_commands.describe(changes="What to change, e.g. 'make it night time'")
+        async def dmrefine(interaction: discord.Interaction, changes: str):
+            await draw_command(interaction, changes, refine=True, private=True)
+
+        @self.tree.command(name="dmedit", description="Upload a picture and say what to change; the result comes by DM")
+        @app_commands.describe(image="The picture to change", changes="What to change, e.g. 'make the hair red'",
+                               character="Optional: a picture of a character to put into the first one")
+        async def dmedit(interaction: discord.Interaction, image: discord.Attachment, changes: str,
+                         character: discord.Attachment = None):
+            await draw_command(interaction, changes, refine=False, image=image, character=character, private=True)
+
+        @self.tree.command(name="dmrecall", description="Your last private pictures by DM, or go back to one")
+        @app_commands.describe(number="Which picture (1 = oldest); leave empty to see them all")
+        async def dmrecall(interaction: discord.Interaction, number: int = None):
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            text, files = self.recall(PRIVATE, interaction.user.id, number)
+            try:
+                await (await interaction.user.create_dm()).send(text, files=files)
+            except discord.HTTPException:
+                await interaction.response.send_message(DM_FAILED, ephemeral=True)
+                return
+            await interaction.response.send_message("Sent by DM. 已私信你。", ephemeral=True)
 
         @self.tree.command(name="recall", description="Go back to one of your last pictures, so /refine builds on it")
         @app_commands.describe(number="Which picture (1 = oldest); leave empty to see them all")
@@ -889,6 +994,9 @@ class ChatBot(discord.Client):
         if self.images and command == "!style":
             await message.reply(self.change_style(message.channel.id, text[len(command):]),
                                 mention_author=False)
+            return
+        if self.images and command in DM_COMMANDS:
+            await self.private_picture(message, DM_COMMANDS[command], text[len(command):].strip())
             return
         if self.images and command == "!recall":
             number = text[len(command):].strip()

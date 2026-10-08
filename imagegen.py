@@ -291,7 +291,7 @@ class ImageMaker:
         self.base[key] = len(kept) - 1
 
     def submit(self, request, channel_id, user_id, deliver, refine=False, progress=None, source=None,
-               source_type="image/png", reference=None, reference_type="image/png"):
+               source_type="image/png", reference=None, reference_type="image/png", style_channel=None):
         """Queue a picture. Returns how many pictures are ahead (0 = starting now), or None if
         this member already has one waiting or being drawn. Raises DrawError if there is
         nothing to refine. deliver(png, error) is awaited
@@ -299,7 +299,9 @@ class ImageMaker:
         if given, is awaited every 10% while ComfyUI draws it, and progress(text) with a countdown
         while Gemma writes its prompt. source: picture bytes to
         redraw with the change (/edit), kept in RAM only; reference: a second picture whose
-        character takes over the first."""
+        character takes over the first. channel_id keys the member's picture history; style_channel,
+        if given, is the channel whose drawing style to use (private pictures have their own history)."""
+        style_channel = style_channel or channel_id
         if user_id in self.waiting:
             return None
         if refine and (channel_id, user_id) not in self.versions:
@@ -309,14 +311,14 @@ class ImageMaker:
         # The style is fixed now, so a later /drawstyle doesn't change queued pictures.
         # A request may start with a style name: "realistic a sports car".
         first, _, rest = request.partition(" ")
-        style, checkpoint = self.style(channel_id), None  # a refine without a style name decides later
+        style, checkpoint = self.style(style_channel), None  # a refine without a style name decides later
         if first.lower() in self.checkpoints and rest.strip():
             style, request = first.lower(), rest.strip()
             checkpoint = self.checkpoints[style]
         elif not refine:
             checkpoint = self.checkpoints[style]
         self.queue.append(Job(request, channel_id, user_id, deliver, refine, checkpoint, progress, source,
-                              self.style(channel_id), source_type=source_type, reference=reference,
+                              self.style(style_channel), source_type=source_type, reference=reference,
                               reference_type=reference_type))
         if not self.drawing:
             self.drawing = True  # set before any await so the bot goes silent at once

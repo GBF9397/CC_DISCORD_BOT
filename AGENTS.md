@@ -50,11 +50,12 @@ Every member-facing release gets a short Chinese announcement as a raw markdown 
   - recolor: when a big area gets a new colour, the source picture is faded (35% colour left, outlines darkened) and redrawn at most 60%;
   - logs `Edit: SIZE x, redrawing N%`, `Refine: ...`, `Recolor: ...` (no message content).
 - **Testing on Ep's PC (2026-10-08 evening):** two-picture swap, countdown, estimate and big uploads work. Red hair on official Ganyu art: at 75% + recolor the hair turned red but horns became cat ears and the pose moved, so recolor was capped at 60% (`22efe04`); Ep is re-testing that. Still to test: 5-6 rounds of `!refine` keeping earlier changes; `!recall` / `!recall 2` then refine; **two people `!refine` at once** (Ep, at home); `!draw realistic 一个女生`. When all pass, Ep merges `claude/task-nb5ft9` into main from the terminal. Update this file's state and README in that same branch before the merge.
-- **Next feature, agreed with Ep (not started):** private drawing commands `!dmdraw`/`/dmdraw`, `!dmedit`/`/dmedit` (incl. second character picture), `!dmrefine`/`/dmrefine`, `!dmrecall`/`/dmrecall`. First DM the member "收到，画好会发到这里"; if the DM fails, say so in the channel and don't draw. Delete `!dm…` messages (Manage Messages, as `!comment` does); `/dm…` replies are ephemeral. The picture goes only by DM; the channel gets an unnamed "🎨 画画中（私人请求）" notice (Ep wants it so members know why the bot is quiet). Private pictures stay out of the public `!recall`; `!dmrecall` lists them by DM.
+- **Private drawing commands (built on this branch, not yet tested on the PC):** `!dmdraw`/`/dmdraw`, `!dmedit`/`/dmedit` (incl. second character picture), `!dmrefine`/`/dmrefine`, `!dmrecall`/`/dmrecall`. The bot first DMs the member "收到，画好会发到这里"; if the DM fails it says so in the channel and draws nothing. `!dm…` messages are deleted (Manage Messages, as `!comment`); `/dm…` replies are ephemeral. The picture goes only by DM; the channel gets an unnamed "画画中（私人请求）" notice with the countdown/progress (Ep wants it so members know why the bot is quiet). Private pictures live under history key `PRIVATE` (0), one per member across channels, so the public `!recall` never shows them; they keep the asking channel's drawing style (`style_channel`). Code: `bot.private_picture()` for `!dm…`, `draw_command(..., private=True)` for `/dm…`, `queue_picture(private=True)`.
 - If red hair still fails at 60%: try more fading (`KEEP_COLOR` 0.2) or `RECOLOR_STRENGTH` 0.55 (not below half). The real fix is ControlNet lineart/canny or masked inpainting in ComfyUI (Ep installs custom nodes + an SDXL model, ~2.5 GB); offered, not started.
 - v1.4 announcement and full command list are drafted (kept on the project side, not in this repo). Next release is **v1.5** (the in-flight image work and `!dm*` go in it).
 
 ## Working rules (save usage)
+- **After every change, give Ep (in Chinese) the commit id to expect, the PC commands to pull and restart, the command list to try and step-by-step checks with what a pass looks like; and keep the same checklist in "Test checklist" below so other sessions know it.**
 - Threads/sessions don't subscribe to PR activity while waiting on Ep; subscribe only while actively driving an Ep-approved task.
 - Big changes at medium effort, small changes at low effort.
 - Don't wake idle work. Wait for Ep.
@@ -73,6 +74,33 @@ Every member-facing release gets a short Chinese announcement as a raw markdown 
 - Stickers: off by default.
 - Reference-image (IP-Adapter) folder: possible future PR. Local only, gitignored, path set in `.env`, nothing minor-looking (adult references kept separate and never minor-looking).
 - More drawing styles via `.env` (`SD_STYLES=name:model, ...`): deferred.
+
+## Test checklist (branch `claude/task-nb5ft9`; update it with every change)
+Pull and restart on the PC, then check the commit id:
+```
+Stop-Process -Name python
+git fetch
+git checkout claude/task-nb5ft9
+git pull
+Start-Process .venv\Scripts\python.exe bot.py -WindowStyle Hidden -RedirectStandardError bot-error.log
+git log --oneline -1
+```
+After a test, before any restart: `Select-String -Path bot-error.log -Pattern "Edit:|Refine:|Recolor" | Select-Object -Last 5`
+
+| # | Try | Pass when | Status |
+|---|---|---|---|
+| 1 | `/edit 把头发改成红色` with official Ganyu art | hair red, horns kept, pose close; log `Edit: SIZE big` + `Recolor: ... redrawing 60%` | 60% cap not yet tested (75% turned hair red but changed too much) |
+| 2 | `!refine` 5-6 rounds (red hair, then 戴上帽子, 背景改成晚上, ...) | each round changes only what was asked; earlier changes stay | not tested |
+| 3 | `!recall`, `!recall 2`, then `!refine 改成蓝色衣服` | list of your pictures; the refine changes picture 2; `!recall` still lists all | not tested |
+| 4 | two members `!refine` at the same time | each gets their own picture changed | not tested (Ep, at home) |
+| 5 | `!draw realistic 一个女生` | realistic photo style | not tested |
+| 6 | `!dmdraw 一只猫` | your message disappears; channel shows only "画画中（私人请求）" + countdown/progress, no name; DM "收到…" then the picture by DM | not tested |
+| 7 | `/dmdraw request:一只猫` | only you see "开始画了，画好私信给你"; rest as #6 | not tested |
+| 8 | `!dmedit 第2张的角色穿第1张的衣服` with two pictures | message deleted; result by DM | not tested |
+| 9 | `!dmrefine 戴上帽子`, `!dmrecall`, `!dmrecall 1` | refines your last private picture; lists arrive by DM; public `!recall` doesn't show private pictures | not tested |
+| 10 | turn off DMs from server members, then `!dmdraw 一只猫` | channel reply "我私信不了你…", message stays, nothing drawn | not tested |
+| 11 | second picture after a restart | queue notice shows `⏱️ 预计 X 分 Y 秒` | passed 10-08 |
+| 12 | two-picture swap `!edit 第2张的角色穿第1张的衣服` | outfit/pose from 1, looks from 2 | passed 10-08 |
 
 ## How picture edits work (imagegen.py)
 - Per picture: Gemma writes the prompt (sees uploaded/old pictures, shrunk to 1024 px) -> `lms unload` -> ComfyUI draws (img2img from a source picture when editing or refining) -> `lms load`. Pictures, prompts and timings stay in RAM.
@@ -105,7 +133,7 @@ Every member-facing release gets a short Chinese announcement as a raw markdown 
   - `AGENTS.md` and `CLAUDE.md` added for Claude sessions.
 
 ## Key code map
-- `bot.py` - Discord client (`ChatBot`): message routing, slash commands, `TEXT_COMMANDS` + `text_command()` for `!` forms, `/comment` webhook repost (`COMMENT`), polls (`poll_answers`, `EndPollButton`, `vote_summary`), events (`event_fields`, `event_start`, `clock_time`, `event_hours`, `EventForm`, `EventPicker`, `EndEventButton`), `/status`, draw/refine/recall/edit commands, `main()` (logger setup).
+- `bot.py` - Discord client (`ChatBot`): message routing, private `!dm…`/`/dm…` pictures (`private_picture`, `DM_COMMANDS`, `PRIVATE`), slash commands, `TEXT_COMMANDS` + `text_command()` for `!` forms, `/comment` webhook repost (`COMMENT`), polls (`poll_answers`, `EndPollButton`, `vote_summary`), events (`event_fields`, `event_start`, `clock_time`, `event_hours`, `EventForm`, `EventPicker`, `EndEventButton`), `/status`, draw/refine/recall/edit commands, `main()` (logger setup).
 - `core.py` - `Brain` (LM Studio calls), `ChannelMemory` (30 messages in RAM), `SYSTEM_PROMPT`, `UNFILTERED_NOTE` (Ep only), `PERSONAS` / character persona prompts (`CHARACTER_STYLE`, `CHARACTER_PROMPT`, `LORE_*`), emoji/sticker handling (`extras_note`, `apply_extras`), random reply length (`REPLY_LENGTHS`, `too_long`, `shorten`, `REWRITE_NOTE`), `split_message`, `load_config`.
 - `imagegen.py` - `ImageMaker`: queue (one per member), styles, per-member history/recall, refine delta edits (`_apply_edits`), prompt rules (`SIZE_RULES`, `REFINER`, `EDITOR`, `SWAP_NOTE`), `REFINE_STRENGTH`/`SWAP_STRENGTH`/`RECOLOR_STRENGTH`, `fade_colors` and `shrink` (Pillow), Gemma prompt with countdown (`_ask`), GPU swap (`_lms`), ComfyUI workflow/websocket, ComfyUI auto-start and node install, `timings`/`estimate`.
 - `comfy_node.py` - ComfyUI custom node that reads a base64 image from the job (no disk writes); copied into `ComfyUI/custom_nodes` at startup.

@@ -1,6 +1,9 @@
 """Image generation against a mock ComfyUI and a fake `lms` CLI."""
 import asyncio
 from collections import deque
+from types import SimpleNamespace
+
+import discord
 
 import pytest_asyncio
 from aiohttp import web
@@ -580,7 +583,7 @@ async def test_slash_edit_passes_the_character_picture(mock_api, comfy, events):
                    "allowed_users": set(), "image_gen": True, "sd_checkpoint": "model.safetensors",
                    "comfyui_url": comfy.url, "image_size": 1024, "lmstudio_context": 16384})
     queued = []
-    bot.queue_picture = lambda *args: queued.append(args) or "🎨 Drawing"
+    bot.queue_picture = lambda *args, **kwargs: queued.append(args) or "🎨 Drawing"
     interaction = slash_interaction()
     interaction.user.mention = "<@5>"
     await bot.tree.get_command("edit").callback(interaction, FakeAttachment(b"BASE", "image/png"), "换成她",
@@ -737,3 +740,104 @@ async def test_recolor_edit_and_refine_fade_the_old_colors(mock_api, comfy, even
     await finish(bot)
     assert base64.b64decode(comfy.jobs[2]["8"]["inputs"]["image"]) == b"FADED"
     assert "RECOLOR" not in comfy.jobs[2]["2"]["inputs"]["text"] + comfy.jobs[2]["3"]["inputs"]["text"]
+
+
+class PrivateChannel(FakeChannel):
+    """A channel whose sent messages can be edited, where the bot may delete messages."""
+    def __init__(self, cid):
+        super().__init__(cid)
+        self.notices = []
+
+    async def send(self, text=None, stickers=None):
+        from tests.test_bot import FakeSent
+        self.sent.append(text)
+        self.notices.append(FakeSent())
+        return self.notices[-1]
+
+    def permissions_for(self, member):
+        return SimpleNamespace(manage_messages=True)
+
+
+class FakeDM:
+    def __init__(self, closed=False):
+        self.closed, self.sent = closed, []
+
+    async def send(self, text=None, file=None, files=None):
+        if self.closed:
+            raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), {"code": 50007, "message": ""})
+        self.sent.append(file or files or text)
+
+
+def private_message(content, channel, dm, attachments=()):
+    msg = FakeMessage(content, channel, attachments=attachments, guild=SimpleNamespace(me=None))
+    msg.deleted = False
+
+    async def create_dm():
+        return dm
+
+    async def delete():
+        msg.deleted = True
+    msg.author.create_dm, msg.delete = create_dm, delete
+    return msg
+
+
+async def test_dmdraw_sends_the_picture_by_dm_and_names_no_one(mock_api, comfy, events):
+    from bot import DM_ACK, PRIVATE_NOTICE
+    bot = image_bot(mock_api.base_url, comfy.url)
+    channel, dm = PrivateChannel(BOT_CHANNEL), FakeDM()
+    mock_api.reply = "a cat"
+    msg = private_message("!dmdraw 一只猫", channel, dm)
+    await bot.on_message(msg)
+    await finish(bot)
+    assert msg.deleted and msg.replies == []  # the request leaves no trace in the channel
+    assert channel.sent[0].startswith(PRIVATE_NOTICE) and "user1" not in channel.sent[0]
+    assert all("user1" not in edit for edit in channel.notices[0].edits)
+    assert dm.sent[0] == DM_ACK and dm.sent[1].filename == "image.png"  # the picture only by DM
+    public = FakeMessage("!recall", channel)
+    await bot.on_message(public)
+    assert public.replies == [NOTHING_TO_RECALL]  # private pictures stay out of the public list
+    await bot.on_message(private_message("！dmrecall", channel, dm))
+    assert [f.filename for f in dm.sent[-1]] == ["1.png"]
+    mock_api.reply = "ADD: hat SIZE: medium"
+    await bot.on_message(private_message("!dmrefine 戴帽子", channel, dm))
+    await finish(bot)
+    assert dm.sent[-1].filename == "image.png" and comfy.jobs[-1]["8"]["inputs"]["image"]  # refined the private one
+
+
+async def test_dm_closed_means_nothing_is_drawn(mock_api, comfy, events):
+    from bot import DM_FAILED
+    bot = image_bot(mock_api.base_url, comfy.url)
+    msg = private_message("!dmedit 头发改成红色", PrivateChannel(BOT_CHANNEL), FakeDM(closed=True),
+                          attachments=[FakeAttachment(_picture((40, 90, 230)), "image/png")])
+    await bot.on_message(msg)
+    assert msg.replies == [DM_FAILED] and not msg.deleted and not bot.images.queue and not comfy.jobs
+
+
+async def test_dmedit_takes_both_pictures_and_slash_dmdraw_answers_only_the_member(mock_api, comfy, events):
+    from bot import DM_ACK, DM_STARTED, PRIVATE_NOTICE, ChatBot
+    bot = image_bot(mock_api.base_url, comfy.url)
+    channel, dm = PrivateChannel(BOT_CHANNEL), FakeDM()
+    mock_api.reply = "1girl, maid outfit"
+    msg = private_message("!dmedit 第2张的角色穿第1张的衣服", channel, dm,
+                          attachments=[FakeAttachment(b"BASE", "image/png"), FakeAttachment(b"CHAR", "image/png")])
+    await bot.on_message(msg)
+    await finish(bot)
+    assert len(mock_api.requests[-1]["messages"][0]["content"]) == 3  # Gemma saw both pictures
+    assert dm.sent[-1].filename == "image.png"
+
+    slash = ChatBot({"token": "x", "base_url": mock_api.base_url, "model": "gemma4-12b-bionic-v2", "channel_ids": set(),
+                     "allowed_users": set(), "image_gen": True, "sd_checkpoint": "model.safetensors",
+                     "comfyui_url": comfy.url, "image_size": 1024, "lmstudio_context": 16384})
+    from tests.test_bot import slash_interaction
+    interaction = slash_interaction()
+    dm2, channel2 = FakeDM(), PrivateChannel(BOT_CHANNEL)
+
+    async def create_dm():
+        return dm2
+    interaction.user.create_dm, interaction.user.mention, interaction.channel = create_dm, "<@5>", channel2
+    mock_api.reply = "a dog"
+    await slash.tree.get_command("dmdraw").callback(interaction, "一只狗")
+    await slash.images._worker
+    assert interaction.response.sent[0][:2] == (DM_STARTED, True)  # only the member sees the answer
+    assert channel2.sent[0].startswith(PRIVATE_NOTICE) and "<@5>" not in channel2.sent[0]
+    assert dm2.sent[0] == DM_ACK and dm2.sent[1].filename == "image.png"
