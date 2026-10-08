@@ -141,6 +141,11 @@ After a test, before any restart: `Select-String -Path bot-error.log -Pattern "E
 - `monitor.py` - always-on-top monitor window and stats used by `/status` (`MONITOR_WINDOW=off` disables).
 - `tests/` - pytest suite with `mock_lmstudio.py`; `README.md` documents member-facing behavior; `.env.example` lists all keys.
 
+## Sessions and handoffs (log every takeover here)
+Each session that takes over, hands off or retires adds a dated line, newest last, so the next session knows who owns what.
+- 2026-10-08: the original local project coordinator retired (context too long). Its last push: the v1.4 announcement task below and `docs/v1.4_release_draft.md`.
+- 2026-10-08: the cloud session `session_01TuHhG4sALA7AwNnx2tNU4G` is Ep's main session. It owns branch `claude/task-nb5ft9` (image follow-ups, `!dm*`) and the v1.4 announcement task. New sessions that hand work to it: add a line here with what you hand over and where it lives (branch, file, PR).
+
 ## Open task: v1.4 release announcement (handed over 2026-10-08)
 - Owner of this task is now whichever session Ep is working with. The old project coordinator has retired.
 - Goal: give Ep, in chat, (a) the full v1.4 member announcement and (b) the full latest command list, each as one raw markdown code block, in Chinese.
