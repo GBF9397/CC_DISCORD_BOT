@@ -305,7 +305,7 @@ async def test_learns_from_how_members_use_emoji(mock_api, monkeypatch):
 async def test_comment_messages_get_no_reply_and_are_not_remembered(mock_api):
     bot = make_bot(mock_api.base_url)
     ch = FakeChannel(BOT_CHANNEL)
-    for text in ("/comment 你们晚上打不打", "/Comment lol", f"<@{BOT_ID}> /comment hi", "／comment 好"):
+    for text in ("/comment 你们晚上打不打", "/Comment lol", f"<@{BOT_ID}> /comment hi", "／comment 好", "!comment 好", "！comment 好"):
         msg = FakeMessage(text, ch, mentions=[bot.user])
         await bot.on_message(msg)
         assert msg.replies == []

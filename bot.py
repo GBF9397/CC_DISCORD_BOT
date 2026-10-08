@@ -34,7 +34,7 @@ ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done.
                   "你已经有一张在排队了，画完才能再点。")
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 # "/comment ..." is a plain message, not a registered slash command, so it still posts.
-COMMENT = re.compile(r"\s*(<@!?\d+>\s*)?[/／]comment\b", re.IGNORECASE)
+COMMENT = re.compile(r"\s*(<@!?\d+>\s*)?[/／!！]comment\b", re.IGNORECASE)
 
 
 def lower_priority():
