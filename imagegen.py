@@ -72,8 +72,10 @@ REFINER = (
     "ADD: medium hair REMOVE: short hair, bob cut AVOID: SIZE: medium\n"
     "ADD: the new tags the change needs. REMOVE: tags from the list above, copied exactly, that the "
     "change replaces or contradicts. AVOID: things the change gets rid of that are not in the list "
-    "(no backlight means AVOID: backlighting). SIZE: small for colors, expression or lighting; medium "
-    "for clothes, hair or background; big for pose, framing, or adding or removing someone; new to "
+    "(no backlight means AVOID: backlighting). SIZE: small for expression, lighting or the color of a "
+    "small thing; medium for hair (its color too), eye color, clothes or background, and at least "
+    "medium when the change goes against how a named character normally looks; big for pose, "
+    "framing, or adding or removing someone; new to "
     "draw it again from scratch. Every tag you don't remove stays exactly as it is, so only touch "
     "what the change asks for. " + TAG_WORDS + "{style} " + SAFETY + "\n\n[Change]\n{request}"
 )
@@ -433,6 +435,8 @@ class ImageMaker:
         job.negative = list(dict.fromkeys(t for t in avoid if t not in add))[:MAX_AVOID]
         size = (edits.get("SIZE", "").split() or ["medium"])[0].lower().strip(" .,")
         job.strength = REFINE_STRENGTH.get(size, REFINE_STRENGTH["medium"])
+        log.info("Refine: SIZE %s, redrawing %d%%, %d tags added, %d removed", size, job.strength * 100, len(add),
+                 len(remove))
         if job.strength < 1:
             job.source = old.png  # redraw part of the last picture instead of starting over
 
