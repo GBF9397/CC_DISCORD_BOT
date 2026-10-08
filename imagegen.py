@@ -422,9 +422,10 @@ class ImageMaker:
                     text, _, avoid = SIZE_WORD.sub("", prompt).partition("AVOID:")
                     job.tags, job.negative = split_tags(text), split_tags(avoid)
                     job.prompt = ", ".join(job.tags)
-                    if job.source and not job.refine and not swap and size:  # a one-picture /edit
-                        job.strength = REFINE_STRENGTH.get(size[1].lower(), EDIT_STRENGTH)
-                        log.info("Edit: SIZE %s, redrawing %d%%", size[1].lower(), job.strength * 100)
+                    if job.source and not job.refine and not swap:  # a one-picture /edit
+                        size = size[1].lower() if size else "none"
+                        job.strength = REFINE_STRENGTH.get(size, EDIT_STRENGTH)
+                        log.info("Edit: SIZE %s, redrawing %d%%", size, job.strength * 100)
                 if blocked(job.prompt):
                     await self._deliver(job.deliver, job.user_id, None, "Sorry, I won't draw that.")
                     continue
