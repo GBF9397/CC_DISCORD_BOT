@@ -608,3 +608,53 @@ async def test_only_the_creator_can_end_a_poll_and_gets_the_counts():
     assert not ended and response.sent[0][0].startswith("Only the person")
     await button.callback(click(5))
     assert ended and "炒饭: 2" in sent[0] and "煎蛋: 1" in sent[0]
+
+
+async def test_end_event_answers_the_click_before_cancelling():
+    from bot import EndEventButton
+    steps = []
+    event = SimpleNamespace(status=discord.EventStatus.scheduled)
+
+    async def cancel():
+        steps.append("cancel")
+    event.cancel = cancel
+
+    async def fetch(event_id):
+        steps.append("fetch")
+        return event
+
+    async def defer():
+        steps.append("defer")
+
+    async def edit_original_response(view=None):
+        steps.append("edit")
+
+    async def followup(text, ephemeral=False):
+        steps.append(text)
+    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Ep"),
+                                  guild=SimpleNamespace(fetch_scheduled_event=fetch),
+                                  response=SimpleNamespace(defer=defer),
+                                  edit_original_response=edit_original_response,
+                                  followup=SimpleNamespace(send=followup))
+    await EndEventButton(5, 9).callback(interaction)
+    # Discord gives a click only 3 s, so the bot answers before it fetches and cancels the event.
+    assert steps[:4] == ["defer", "fetch", "cancel", "edit"] and "ended the event" in steps[4]
+
+
+async def test_end_event_says_when_discord_refuses():
+    from bot import EndEventButton
+    sent = []
+
+    async def fetch(event_id):
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), {"code": 50013, "message": ""})
+
+    async def defer():
+        pass
+
+    async def followup(text, ephemeral=False):
+        sent.append((text, ephemeral))
+    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Ep"),
+                                  guild=SimpleNamespace(fetch_scheduled_event=fetch),
+                                  response=SimpleNamespace(defer=defer), followup=SimpleNamespace(send=followup))
+    await EndEventButton(5, 9).callback(interaction)
+    assert "50013" in sent[0][0] and sent[0][1]

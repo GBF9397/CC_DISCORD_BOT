@@ -176,6 +176,7 @@ class EndEventButton(discord.ui.DynamicItem[discord.ui.Button],
         if interaction.user.id != self.creator:
             await interaction.response.send_message(ONLY_CREATOR, ephemeral=True)
             return
+        await interaction.response.defer()  # fetching and cancelling can take longer than Discord's 3 s
         try:
             event = await interaction.guild.fetch_scheduled_event(self.event_id)
             if event.status == discord.EventStatus.active:
@@ -184,7 +185,12 @@ class EndEventButton(discord.ui.DynamicItem[discord.ui.Button],
                 await event.cancel()
         except discord.NotFound:
             pass  # already deleted
-        await interaction.response.edit_message(view=None)
+        except discord.HTTPException as e:
+            log.warning("Ending an event failed: HTTP %s, code %s", e.status, e.code)
+            await interaction.followup.send(f"Discord refused to end the event (HTTP {e.status}, code {e.code}). "
+                                            "Discord 拒绝结束这个活动。", ephemeral=True)
+            return
+        await interaction.edit_original_response(view=None)
         await interaction.followup.send(f"📅 {interaction.user.display_name} ended the event 结束了活动。")
 
 
