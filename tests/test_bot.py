@@ -687,3 +687,15 @@ async def test_end_event_twice_just_removes_the_button():
                                   followup=SimpleNamespace(send=followup))
     await EndEventButton(5, 9).callback(interaction)
     assert steps == ["edit"]
+
+
+def test_event_fields_can_come_in_any_order():
+    from bot import event_fields
+    assert event_fields(["看电影", "10-10", "8:30pm", "两个小时", "Voice Channel"]) == \
+        ("看电影", "10-10", "8:30pm", "Voice Channel", 2.0, "")
+    assert event_fields(["晚上8点", "看电影", "3h", "语音频道", "2026-10-10", "带零食", "别迟到"]) == \
+        ("看电影", "2026-10-10", "晚上8点", "语音频道", 3.0, "带零食 | 别迟到")
+    assert event_fields(["电影夜", "10-10", "8:30pm", "语音频道", "1.5小时"])[4] == 1.5
+    assert event_fields(["电影夜", "10-10", "8:30pm", "语音频道"])[4] == 2.0  # default
+    assert event_fields(["电影夜", "10-10", "8:30pm"]) is None  # no place
+    assert event_fields(["电影夜", "语音频道", "8:30pm"]) is None  # no date

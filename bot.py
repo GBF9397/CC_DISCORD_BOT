@@ -50,8 +50,9 @@ MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
 POLL_USAGE = ("Write it as: !poll question | answers | @members (answers and members optional), e.g. "
               "!poll 今晚吃什么 | 炒饭，煎蛋 | @Daddy宏\n格式：!poll 问题 | 选项 | @成员（选项和成员可不写）")
-EVENT_USAGE = ("Write it as: !event name | date | time | place (| hours | details), e.g. "
-               "!event 电影夜 | 10-10 | 8:30pm | 语音频道\n格式：!event 名称 | 日期 | 时间 | 地点（| 小时 | 说明）")
+EVENT_USAGE = ("Write it as: !event name | date | time | place (| hours | details), any order as long as "
+               "the name comes before the place, e.g. !event 电影夜 | 10-10 | 8:30pm | 语音频道\n"
+               "格式：!event 名称 | 日期 | 时间 | 地点（| 小时 | 说明），顺序随意，名称写在地点前面就行")
 NO_EVENT_PERMISSION = ("I need the Create Events permission in this server to do that. "
                        "我在这个服务器没有「创建活动」权限，请管理员给我加上。")
 
@@ -107,6 +108,35 @@ def event_start(date, time, now=None):
             start = start.replace(year=now.year + 1)
         return start
     return None
+
+
+def event_hours(text):
+    """Reads 3, 1.5, 3h, 2小时 or 两个小时 / 一个半小时 as hours, or None."""
+    match = re.fullmatch(r"(\d+(?:\.\d+)?|[一二两三四五六七八九十])\s*个?\s*(半)?\s*(小时|钟头|h|hrs?|hours?)?",
+                         text.strip(), re.IGNORECASE)
+    if not match or (not match[1][0].isdigit() and not match[3]):
+        return None  # a lone Chinese numeral is more likely a name than hours
+    number = float(match[1]) if match[1][0].isdigit() else "一二三四五六七八九十".find(match[1]) + 1 or 2.0
+    return number + (0.5 if match[2] else 0)
+
+
+def event_fields(parts):
+    """Sorts !event fields given in any order into (name, date, time, place, hours, details), or None.
+    Date, time and hours are known by their look; the other fields are name, then place, then details."""
+    date = time = hours = None
+    texts = []
+    for part in filter(None, parts):
+        if date is None and event_start(part, "0:00") is not None:
+            date = part
+        elif time is None and clock_time(part) is not None:
+            time = part
+        elif hours is None and event_hours(part) is not None:
+            hours = event_hours(part)
+        else:
+            texts.append(part)
+    if not (date and time and len(texts) >= 2):
+        return None
+    return texts[0], date, time, texts[1], min(max(hours or 2.0, 0.25), 72.0), " | ".join(texts[2:])
 
 
 def lower_priority():
@@ -663,18 +693,11 @@ class ChatBot(discord.Client):
             await message.reply("Memory for this channel cleared.", mention_author=False)
             return
         if command == "!event" and message.guild is not None:
-            parts = [p.strip() for p in re.split(r"[|｜]", rest)]
-            if len(parts) < 4 or not all(parts[:4]):
+            fields = event_fields([p.strip() for p in re.split(r"[|｜]", rest)])
+            if fields is None:
                 await message.reply(EVENT_USAGE, mention_author=False)
                 return
-            hours = 2.0
-            if len(parts) > 4 and parts[4]:
-                try:
-                    hours = min(max(float(parts[4].rstrip("小时hH ")), 0.25), 72.0)
-                except ValueError:
-                    pass
-            text, view = await self.create_event(message.guild, message.author, *parts[:4], hours,
-                                                 " | ".join(parts[5:]))
+            text, view = await self.create_event(message.guild, message.author, *fields)
             await message.reply(text, view=view, mention_author=False)
             return
         if command == "!status":
