@@ -2,7 +2,11 @@
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-from bot import ChatBot
+from datetime import datetime, timedelta, timezone
+
+import discord
+
+from bot import NO_EVENT_PERMISSION, POLL_VOTERS, ChatBot, event_start, poll_answers
 
 BOT_ID, CHANNEL, BOT_CHANNEL, BOT_CHANNEL_2 = 999, 10, 20, 30
 
@@ -123,7 +127,7 @@ async def test_long_reply_is_split(mock_api, monkeypatch):
 async def test_slash_commands_registered_and_work(mock_api):
     bot = make_bot(mock_api.base_url)
     names = {c.name for c in bot.tree.get_commands()}
-    assert names == {"ask", "reset", "search", "persona", "status"}
+    assert names == {"ask", "reset", "search", "persona", "poll", "event", "status"}
 
     sent = []
     async def followup_send(text):
@@ -314,3 +318,160 @@ async def test_bang_search_reply_has_no_length_cap(mock_api, monkeypatch):
     await bot.on_message(msg)
     assert msg.replies == ["一二三四五六七八九十" * 20]
     assert "Length limit" not in mock_api.requests[-1]["messages"][0]["content"]
+
+
+class FakeResponse:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, content=None, ephemeral=False, poll=None):
+        self.sent.append((content, ephemeral, poll))
+
+
+def slash_interaction(guild=None):
+    response = FakeResponse()
+
+    async def defer(thinking=False):
+        pass
+
+    async def followup(content=None):
+        response.sent.append((content, False, None))
+    response.defer = defer
+    return SimpleNamespace(user=SimpleNamespace(id=5, display_name="member"), channel_id=CHANNEL,
+                           guild=guild, response=response, followup=SimpleNamespace(send=followup))
+
+
+def test_poll_answers_split_and_default_to_yes_no():
+    assert poll_answers("是 | 不是") == ["是", "不是"]
+    assert poll_answers("红，蓝、绿/黄,紫") == ["红", "蓝", "绿", "黄", "紫"]
+    assert poll_answers("ey gib｜ep hung／xuan") == ["ey gib", "ep hung", "xuan"]
+    assert poll_answers("") == ["是 Yes", "不是 No"]
+
+
+async def test_poll_command_posts_a_native_poll(mock_api):
+    bot = make_bot(mock_api.base_url)
+    interaction = slash_interaction()
+    await bot.tree.get_command("poll").callback(interaction, "gib是不是男同", "是 | 不是", "", 12, False)
+    (content, ephemeral, vote), = interaction.response.sent
+    assert vote.question == "gib是不是男同"
+    assert [a.text for a in vote.answers] == ["是", "不是"]
+    assert vote.duration == timedelta(hours=12) and not vote.multiple and not ephemeral and content is None
+
+    interaction = slash_interaction()
+    await bot.tree.get_command("poll").callback(interaction, "q", "|".join("abcdefghijk"), "", 24, False)
+    assert interaction.response.sent[0][1] is True  # too many answers: only the asker is told
+
+
+def test_event_start_reads_dates_and_times():
+    now = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+    assert event_start("2026-10-10", "20:30", now) == datetime(2026, 10, 10, 20, 30, tzinfo=timezone.utc)
+    assert event_start("2026/10/10", "20：30", now) == datetime(2026, 10, 10, 20, 30, tzinfo=timezone.utc)
+    assert event_start("10-10", "8:05", now) == datetime(2026, 10, 10, 8, 5, tzinfo=timezone.utc)
+    assert event_start("1/5", "20:00", now) == datetime(2027, 1, 5, 20, 0, tzinfo=timezone.utc)  # passed: next year
+    assert event_start("next friday", "20:00", now) is None
+    for text in ("8:30pm", "8:30 PM", "晚上8:30", "下午8点半"[:-1] + "30", "20:30"):
+        assert event_start("10-10", text, now).hour == 20, text
+    assert event_start("10-10", "8pm", now).strftime("%H:%M") == "20:00"
+    assert event_start("10-10", "12am", now).hour == 0 and event_start("10-10", "12pm", now).hour == 12
+    assert event_start("10-10", "上午9点", now).strftime("%H:%M") == "09:00"
+    assert event_start("10-10", "8", now) is None and event_start("10-10", "13pm", now) is None
+
+
+class FakeGuild:
+    id = 1
+
+    def __init__(self, forbidden=False):
+        self.forbidden, self.created = forbidden, None
+
+    async def create_scheduled_event(self, **kwargs):
+        if self.forbidden:
+            raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "Missing Permissions")
+        self.created = kwargs
+        return SimpleNamespace(name=kwargs["name"], location=kwargs["location"], url="https://discord.com/events/1/2")
+
+
+async def test_event_command_creates_an_external_event(mock_api):
+    bot = make_bot(mock_api.base_url)
+    guild = FakeGuild()
+    interaction = slash_interaction(guild)
+    date = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+    await bot.tree.get_command("event").callback(interaction, "Movie night", date, "20:30", "Voice channel", 2.0, "")
+    made = guild.created
+    assert made["entity_type"] == discord.EntityType.external and made["location"] == "Voice channel"
+    assert made["end_time"] - made["start_time"] == timedelta(hours=2)
+    content, ephemeral, _ = interaction.response.sent[0]
+    assert "Movie night" in content and "https://discord.com/events/1/2" in content and not ephemeral
+
+
+async def test_event_command_refuses_bad_or_past_times_and_missing_permission(mock_api):
+    bot = make_bot(mock_api.base_url)
+    cmd = bot.tree.get_command("event").callback
+    future = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+    for date, time, guild in (("soon", "20:30", FakeGuild()), ("2020-01-01", "20:30", FakeGuild()),
+                              (future, "20:30", FakeGuild(forbidden=True))):
+        interaction = slash_interaction(guild)
+        await cmd(interaction, "x", date, time, "here", 2.0, "")
+        assert guild.created is None
+    assert interaction.response.sent[0][0] == NO_EVENT_PERMISSION
+
+
+async def test_poll_with_members_names_them_and_ends_once_they_all_voted(mock_api):
+    bot = make_bot(mock_api.base_url)
+    interaction = slash_interaction()
+    await bot.tree.get_command("poll").callback(interaction, "q", "", "<@11> <@!12> <@11>", None, False)
+    content, _, vote = interaction.response.sent[0]
+    assert content == POLL_VOTERS + "<@11> <@12>" and vote.duration == timedelta(hours=768)
+
+    interaction = slash_interaction()
+    await bot.tree.get_command("poll").callback(interaction, "q", "", "Daddy宏", 768, False)
+    assert interaction.response.sent[0][1] is True  # names without @ are refused, privately
+
+    votes = {"是 Yes": [11], "不是 No": [99]}
+    ended = []
+
+    class Answer:
+        def __init__(self, ids):
+            self.ids = ids
+
+        async def voters(self):
+            for i in self.ids:
+                yield SimpleNamespace(id=i)
+
+    message = SimpleNamespace(id=1, author=SimpleNamespace(id=BOT_ID), content=content,
+                              poll=SimpleNamespace(answers=[Answer(v) for v in votes.values()],
+                                                   is_finalised=lambda: False))
+    async def end_poll():
+        ended.append(True)
+    async def fetch_message(mid):
+        return message
+    message.end_poll = end_poll
+    bot.get_channel = lambda cid: SimpleNamespace(fetch_message=fetch_message)
+    payload = SimpleNamespace(channel_id=CHANNEL, message_id=1)
+    await bot.on_raw_poll_vote_add(payload)
+    assert not ended  # member 12 hasn't voted; votes from others don't count
+    message.poll.answers[1].ids.append(12)
+    await bot.on_raw_poll_vote_add(payload)
+    assert ended == [True]
+
+
+async def test_poll_without_members_defaults_to_one_day(mock_api):
+    bot = make_bot(mock_api.base_url)
+    interaction = slash_interaction()
+    await bot.tree.get_command("poll").callback(interaction, "q", "", "", None, False)
+    assert interaction.response.sent[0][2].duration == timedelta(hours=24)
+
+
+async def test_bang_event_creates_an_event_from_one_line(mock_api):
+    bot = make_bot(mock_api.base_url)
+    guild = FakeGuild()
+    date = (datetime.now() + timedelta(days=3)).strftime("%m-%d")
+    msg = FakeMessage(f"!event 电影夜 | {date} | 8:30pm | 语音频道 | 3", FakeChannel(CHANNEL), guild=guild)
+    await bot.on_message(msg)
+    assert guild.created["name"] == "电影夜" and guild.created["location"] == "语音频道"
+    assert guild.created["start_time"].strftime("%H:%M") == "20:30"
+    assert guild.created["end_time"] - guild.created["start_time"] == timedelta(hours=3)
+    assert "https://discord.com/events/1/2" in msg.replies[0]
+
+    msg = FakeMessage("！event 电影夜 10-10 8:30pm", FakeChannel(CHANNEL), guild=FakeGuild())
+    await bot.on_message(msg)
+    assert msg.replies[0].startswith("Write it as")
