@@ -43,7 +43,8 @@ Every member-facing release gets a short Chinese announcement as a raw markdown 
 
 ## Current state
 - v1.4 is merged to main: PRs #12-#22, including #13 (perf monitor, `/status`), #15 (chat fixes, `/comment`, persona search improvements, backup search engines), #20 (`!` form for all commands), #21 (`!status`), #22 (creator-only 「结束」 end button on polls and events), the event form with date/time menus, and PR #14 (per-member `/refine`, `/recall`, `/edit`). Main also has (merged at `3c9c254`) the two-picture character swap for `/edit`, the wait-time estimate, Pillow shrinking of uploads and the 5-minute Gemma countdown.
-- **In flight: branch `claude/task-nb5ft9`** (image follow-ups after #14, not on main yet). A new session starts there: `git checkout claude/task-nb5ft9`, `pip install -r requirements.txt -r requirements-dev.txt`, `python -m pytest`. It adds, on top of main:
+- **Merged 10-08 late: `claude/task-nb5ft9` is on main (up to `fc89d40`).** v1.4 announcement and command list are final in `docs/v1.4_release_draft.md`. Gap found: `/persona` has no `!persona` form (hard rule 1); waiting for Ep before adding it. Later commits on the branch (docs, slash descriptions) need one more merge.
+- Branch `claude/task-nb5ft9` (image follow-ups after #14). A new session starts there: `git checkout claude/task-nb5ft9`, `pip install -r requirements.txt -r requirements-dev.txt`, `python -m pytest`. It adds, on top of main:
   - refine/edit redraw sizes: any change the member names redraws over half (small 0.55); hair colour counts as big; `/edit` takes its size from Gemma instead of a fixed 0.6;
   - a change against a named character's usual look (e.g. Ganyu with red hair) drops the name/series tags and describes the looks, since the drawing model always draws a named character their usual way;
   - refine keeps every untouched tag's exact text and weight across rounds (only this round's additions get 1.3);

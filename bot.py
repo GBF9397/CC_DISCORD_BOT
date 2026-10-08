@@ -835,7 +835,7 @@ class ChatBot(discord.Client):
         async def draw(interaction: discord.Interaction, request: str):
             await draw_command(interaction, request, refine=False)
 
-        @self.tree.command(name="refine", description="Change your last picture in this channel (or the one /recall picked)")
+        @self.tree.command(name="refine", description="Change your last picture in this channel")
         @app_commands.describe(changes="What to change, e.g. 'make it night time'")
         async def refine(interaction: discord.Interaction, changes: str):
             await draw_command(interaction, changes, refine=True)
@@ -852,7 +852,7 @@ class ChatBot(discord.Client):
         async def dmdraw(interaction: discord.Interaction, request: str):
             await draw_command(interaction, request, refine=False, private=True)
 
-        @self.tree.command(name="dmrefine", description="Change your last private picture (or the one /dmrecall picked)")
+        @self.tree.command(name="dmrefine", description="Change your last private picture")
         @app_commands.describe(changes="What to change, e.g. 'make it night time'")
         async def dmrefine(interaction: discord.Interaction, changes: str):
             await draw_command(interaction, changes, refine=True, private=True)
