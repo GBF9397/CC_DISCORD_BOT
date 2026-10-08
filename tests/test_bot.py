@@ -329,8 +329,16 @@ class FakeResponse:
 
 
 def slash_interaction(guild=None):
+    response = FakeResponse()
+
+    async def defer(thinking=False):
+        pass
+
+    async def followup(content=None):
+        response.sent.append((content, False, None))
+    response.defer = defer
     return SimpleNamespace(user=SimpleNamespace(id=5, display_name="member"), channel_id=CHANNEL,
-                           guild=guild, response=FakeResponse())
+                           guild=guild, response=response, followup=SimpleNamespace(send=followup))
 
 
 def test_poll_answers_split_and_default_to_yes_no():
@@ -370,6 +378,8 @@ def test_event_start_reads_dates_and_times():
 
 
 class FakeGuild:
+    id = 1
+
     def __init__(self, forbidden=False):
         self.forbidden, self.created = forbidden, None
 
@@ -401,7 +411,7 @@ async def test_event_command_refuses_bad_or_past_times_and_missing_permission(mo
                               (future, "20:30", FakeGuild(forbidden=True))):
         interaction = slash_interaction(guild)
         await cmd(interaction, "x", date, time, "here", 2.0, "")
-        assert interaction.response.sent[0][1] is True and guild.created is None
+        assert guild.created is None
     assert interaction.response.sent[0][0] == NO_EVENT_PERMISSION
 
 
@@ -449,3 +459,19 @@ async def test_poll_without_members_defaults_to_one_day(mock_api):
     interaction = slash_interaction()
     await bot.tree.get_command("poll").callback(interaction, "q", "", "", None, False)
     assert interaction.response.sent[0][2].duration == timedelta(hours=24)
+
+
+async def test_bang_event_creates_an_event_from_one_line(mock_api):
+    bot = make_bot(mock_api.base_url)
+    guild = FakeGuild()
+    date = (datetime.now() + timedelta(days=3)).strftime("%m-%d")
+    msg = FakeMessage(f"!event 电影夜 | {date} | 8:30pm | 语音频道 | 3", FakeChannel(BOT_CHANNEL), guild=guild)
+    await bot.on_message(msg)
+    assert guild.created["name"] == "电影夜" and guild.created["location"] == "语音频道"
+    assert guild.created["start_time"].strftime("%H:%M") == "20:30"
+    assert guild.created["end_time"] - guild.created["start_time"] == timedelta(hours=3)
+    assert "https://discord.com/events/1/2" in msg.replies[0]
+
+    msg = FakeMessage("!event 电影夜 10-10 8:30pm", FakeChannel(BOT_CHANNEL), guild=FakeGuild())
+    await bot.on_message(msg)
+    assert msg.replies[0].startswith("Write it as")

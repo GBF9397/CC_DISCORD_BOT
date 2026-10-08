@@ -37,6 +37,8 @@ EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
+EVENT_USAGE = ("Write it as: !event name | date | time | place (| hours | details), e.g. "
+               "!event 电影夜 | 10-10 | 8:30pm | 语音频道\n格式：!event 名称 | 日期 | 时间 | 地点（| 小时 | 说明）")
 NO_EVENT_PERMISSION = ("I need the Create Events permission in this server to do that. "
                        "我在这个服务器没有「创建活动」权限，请管理员给我加上。")
 
@@ -234,6 +236,28 @@ class ChatBot(discord.Client):
     async def on_guild_stickers_update(self, guild, before, after):
         await self.learn_meanings(guild)
 
+    async def create_event(self, guild, user_name, name, date, time, place, hours=2.0, details=""):
+        """Creates a Discord scheduled event; returns the text to post."""
+        start = event_start(date, time)
+        if start is None:
+            return ("I can't read that date or time. Use e.g. date 2026-10-10 and time 20:30 or 8:30pm. "
+                    "日期或时间看不懂，请写成 2026-10-10 和 20:30 或 8:30pm。")
+        if start <= datetime.now().astimezone():
+            return "That time has already passed. 这个时间已经过了。"
+        log.info("Creating an event in guild %s", guild.id)
+        try:
+            created = await guild.create_scheduled_event(
+                name=name[:100], start_time=start, end_time=start + timedelta(hours=hours),
+                entity_type=discord.EntityType.external, privacy_level=discord.PrivacyLevel.guild_only,
+                location=place[:100], description=details[:1000])
+        except discord.Forbidden:
+            return NO_EVENT_PERMISSION
+        except discord.HTTPException as e:
+            log.warning("Creating an event failed: HTTP %s, code %s", e.status, e.code)
+            return f"Discord refused the event (HTTP {e.status}, code {e.code}). Discord 拒绝了这个活动。"
+        return (f"📅 {user_name} created an event 建了一个活动: **{created.name}**\n"
+                f"🕒 <t:{int(start.timestamp())}:F>\n📍 {created.location}\n{created.url}")
+
     def _add_slash_commands(self):
         @self.tree.command(name="ask", description="Ask the bot something")
         async def ask(interaction: discord.Interaction, question: str):
@@ -353,27 +377,9 @@ class ChatBot(discord.Client):
                 await interaction.response.send_message("Events only work in a server. 活动只能在服务器里建。",
                                                         ephemeral=True)
                 return
-            start = event_start(date, time)
-            if start is None:
-                await interaction.response.send_message(
-                    "I can't read that date or time. Use e.g. date 2026-10-10 and time 20:30. "
-                    "日期或时间看不懂，请写成 2026-10-10 和 20:30。", ephemeral=True)
-                return
-            if start <= datetime.now().astimezone():
-                await interaction.response.send_message("That time has already passed. 这个时间已经过了。",
-                                                        ephemeral=True)
-                return
-            try:
-                created = await interaction.guild.create_scheduled_event(
-                    name=name[:100], start_time=start, end_time=start + timedelta(hours=hours),
-                    entity_type=discord.EntityType.external, privacy_level=discord.PrivacyLevel.guild_only,
-                    location=place[:100], description=details[:1000])
-            except discord.Forbidden:
-                await interaction.response.send_message(NO_EVENT_PERMISSION, ephemeral=True)
-                return
-            await interaction.response.send_message(
-                f"📅 {interaction.user.display_name} created an event 建了一个活动: **{created.name}**\n"
-                f"🕒 <t:{int(start.timestamp())}:F>\n📍 {created.location}\n{created.url}")
+            await interaction.response.defer(thinking=True)  # Discord gives up on a reply after 3 seconds
+            await interaction.followup.send(await self.create_event(
+                interaction.guild, interaction.user.display_name, name, date, time, place, hours, details))
 
         if self.images is None:
             return
@@ -494,6 +500,21 @@ class ChatBot(discord.Client):
             notice = self.queue_picture(text[len(command):].strip(), message.channel.id, message.author.id,
                                         command == "!refine", send, edit)
             notice_message = await message.reply(notice, mention_author=False)
+            return
+        if command == "!event" and message.guild is not None:
+            parts = [p.strip() for p in re.split(r"[|｜]", text[len(command):])]
+            if len(parts) < 4 or not all(parts[:4]):
+                await message.reply(EVENT_USAGE, mention_author=False)
+                return
+            hours = 2.0
+            if len(parts) > 4 and parts[4]:
+                try:
+                    hours = min(max(float(parts[4].rstrip("小时hH ")), 0.25), 72.0)
+                except ValueError:
+                    pass
+            await message.reply(await self.create_event(message.guild, message.author.display_name,
+                                                        *parts[:4], hours, " | ".join(parts[5:])),
+                                mention_author=False)
             return
         search = text.lower().startswith("!search ")
         if search:
