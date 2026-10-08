@@ -157,6 +157,15 @@ CLAUSE_END = re.compile(r"[，,、；;]")
 SLACK = 1.5  # a reply a bit over its limit is kept whole: a cut looks like a broken reply
 
 
+REWRITE_NOTE = ("[That reply is too long. Say the same thing again in your own voice in at most "
+                "{n} Chinese characters, or {n} words in English, as complete sentences. Reply with "
+                "only the new version.]")
+
+
+def too_long(reply, limit):
+    return len(LENGTH_UNIT.findall(reply)) > int(limit * SLACK)
+
+
 def shorten(reply, limit):
     """Safety net for replies well over the limit: cut at the last sentence end, else
     the last comma, that keeps at least a third of the text; only then add an ellipsis."""
@@ -342,6 +351,17 @@ class Brain:
                 return ERROR_MESSAGE
             # Gemma 4 puts its reasoning in reasoning_content; only content is posted.
             reply = (resp.choices[0].message.content or "").strip() or "..."
+            if limit and too_long(STICKER_TAG.sub("", reply), limit):
+                # Over the cap: ask Gemma once to say it again within it, so nothing gets cut.
+                try:
+                    resp = await self.client.chat.completions.create(
+                        model=self.model, temperature=self.temperature, top_p=self.top_p,
+                        messages=messages + [{"role": "assistant", "content": reply},
+                                             {"role": "user", "content": REWRITE_NOTE.format(n=limit)}],
+                    )
+                    reply = (resp.choices[0].message.content or "").strip() or reply
+                except (APIConnectionError, APITimeoutError, APIStatusError):
+                    pass  # keep the long reply; shorten() below still trims it
             if limit:
                 sticker = STICKER_TAG.search(reply)
                 reply = shorten(STICKER_TAG.sub("", reply).strip(), limit) + (sticker.group(0) if sticker else "")

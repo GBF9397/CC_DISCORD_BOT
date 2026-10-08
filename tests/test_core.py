@@ -147,7 +147,7 @@ async def test_each_reply_draws_a_length_cap_and_long_replies_are_cut(mock_api, 
     brain = make_brain(mock_api.base_url)
     reply = await brain.ask(1, "Ep", "hi")
     assert reply == "哈哈哈哈哈哈。今天天气真好呀！"  # cut at a sentence end within 1.5x the cap
-    sent = mock_api.requests[-1]["messages"]
+    sent = mock_api.requests[0]["messages"]
     assert "Length limit" not in sent[0]["content"]  # with the newest message, not the system prompt
     assert sent[-1]["content"].startswith("Ep: hi\n\n[Length limit for this reply: at most 10 Chinese")
     assert brain.memory.get(1) == [{"role": "user", "content": "Ep: hi"},
@@ -193,3 +193,14 @@ async def test_character_persona_is_told_not_to_repeat_catchphrases(mock_api):
     mock_api.reply = "King of Curses."
     text = await make_brain(mock_api.base_url).character_persona("Sukuna", "results")
     assert "never repeat a word or phrase" in text and "is Sukuna only when it clearly is" in text
+
+
+async def test_reply_over_the_cap_is_rewritten_within_it(mock_api, monkeypatch):
+    import core
+    monkeypatch.setattr(core.random, "choice", lambda options: 10)
+    mock_api.reply = ["一二三四五六七八九十" * 3, "好的，懂了。"]
+    brain = make_brain(mock_api.base_url)
+    app_reply = await brain.ask(1, "Ep", "hi")
+    assert app_reply == "好的，懂了。" and len(mock_api.requests) == 2
+    assert "at most 10 Chinese characters" in mock_api.requests[1]["messages"][-1]["content"]
+    assert brain.memory.get(1)[-1]["content"] == "好的，懂了。"
