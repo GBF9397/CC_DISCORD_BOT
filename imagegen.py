@@ -22,7 +22,7 @@ from statistics import fmean
 from dataclasses import dataclass
 
 import aiohttp
-from PIL import Image, ImageOps
+from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 import core as brain_core
 from core import TooSlow
@@ -63,7 +63,8 @@ SIZE_RULES = (
     "new to draw it again from scratch. When the change goes against how a named character normally "
     "looks (like another hair color), leave out the character's name and series tags and describe the "
     "looks instead, since the drawing model always draws a named character with their usual looks, "
-    "and make it at least big. "
+    "and make it at least big. When the change gives a big area a new color (hair, clothes, skin or "
+    "background), also write RECOLOR at the very end. "
 )
 # For /edit: the change wins over what the uploaded picture shows.
 CHANGE_RULES = (
@@ -125,6 +126,22 @@ COUNTDOWN_EVERY = 15  # seconds between "giving up in ..." updates while Gemma w
 MAX_PICTURE_SIDE = 1024  # uploads are shrunk to this before Gemma and ComfyUI see them
 
 
+def fade_colors(data):
+    """For a recolor: most of the old color taken out and the outlines drawn darker, so the drawing
+    model paints the new colors instead of keeping the old ones, yet still sees where hair ends and
+    a similar-looking background begins. A picture Pillow can't read is left as it is. RAM only."""
+    try:
+        picture = Image.open(io.BytesIO(data)).convert("RGB")
+    except (OSError, ValueError):
+        return data
+    faded = ImageEnhance.Color(picture).enhance(KEEP_COLOR)
+    edges = picture.filter(ImageFilter.FIND_EDGES).convert("L")  # color edges too, not just brightness
+    shade = edges.point(lambda v: 255 - min(200, v * 3))  # 255 = untouched, darker along the edges
+    out = io.BytesIO()
+    ImageChops.multiply(faded, Image.merge("RGB", (shade, shade, shade))).save(out, "PNG")
+    return out.getvalue()
+
+
 def shrink(data, mime):
     """Any picture as (PNG, mime) at most MAX_PICTURE_SIDE wide or tall, upright, first frame only;
     one Pillow can't read is passed on as it is. RAM only."""
@@ -152,6 +169,8 @@ NODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_node
 EDIT_NODE = "BotLoadImageBase64"  # in comfy_node.py, copied into ComfyUI's custom_nodes
 
 SIZE_WORD = re.compile(r"\bSIZE:\s*(\w+)")
+RECOLOR_WORD = re.compile(r"\s*\bRECOLOR\b")
+KEEP_COLOR = 0.35  # share of the old colors left in a picture before a recolor
 EDIT_WORDS = re.compile(r"\b(ADD|REMOVE|AVOID|SIZE):\s*(.*?)(?=\s*\b(?:ADD|REMOVE|AVOID|SIZE):|$)")
 WEIGHTED = re.compile(r"^\((.*?)(?::[\d.]+)?\)$")
 # How much of the last picture a /refine redraws (1.0 = draw again with the same seed). Every asked-for
@@ -207,6 +226,7 @@ class Job:
     source_type: str = "image/png"
     reference: bytes = None  # /edit's second picture: whose looks to use; RAM only, dropped once read
     reference_type: str = "image/png"
+    recolor: bool = False  # a big area gets a new color: the old colors are faded before redrawing
 
 
 class ImageMaker:
@@ -415,6 +435,8 @@ class ImageMaker:
             elif prompt.startswith("REFUSED"):
                 await self._deliver(job.deliver, job.user_id, None, "Sorry, I won't draw that.")
             else:
+                job.recolor = bool(RECOLOR_WORD.search(prompt))
+                prompt = RECOLOR_WORD.sub("", prompt)
                 if job.refine and EDIT_WORDS.search(prompt):
                     self._apply_edits(job, old, prompt)
                 else:  # a whole prompt (a refine whose reply ignored the edit format starts over too)
@@ -429,6 +451,9 @@ class ImageMaker:
                 if blocked(job.prompt):
                     await self._deliver(job.deliver, job.user_id, None, "Sorry, I won't draw that.")
                     continue
+                if job.recolor and job.source and job.strength < 1:
+                    log.info("Recolor: fading the old colors before redrawing")
+                    job.source = await asyncio.to_thread(fade_colors, job.source)
                 jobs.append(job)
         return jobs
 

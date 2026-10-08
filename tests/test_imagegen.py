@@ -681,3 +681,58 @@ async def test_edit_redraws_as_much_as_gemma_says_the_change_needs(mock_api, com
     assert "blue hair, ganyu (genshin impact)" in job["3"]["inputs"]["text"] and "SIZE" not in job["3"]["inputs"]["text"]
     asked = mock_api.requests[-1]["messages"][0]["content"][0]["text"]
     assert "big for hair color" in asked and "leave out the character's name" in asked
+
+
+def _picture(color, size=(64, 64)):
+    import io
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", size, color).save(out, "PNG")
+    return out.getvalue()
+
+
+def _colorfulness(data):
+    import io
+    from PIL import Image
+    r, g, b = Image.open(io.BytesIO(data)).convert("RGB").getpixel((5, 5))
+    return max(r, g, b) - min(r, g, b)
+
+
+def test_fade_colors_takes_most_color_out_and_keeps_outlines():
+    import io
+    from PIL import Image, ImageDraw
+    from imagegen import fade_colors
+    blue = _picture((40, 90, 230))
+    assert _colorfulness(fade_colors(blue)) < _colorfulness(blue) * 0.5
+    picture = Image.new("RGB", (64, 64), (120, 120, 200))
+    ImageDraw.Draw(picture).line((32, 0, 32, 63), fill=(120, 120, 200))
+    ImageDraw.Draw(picture).rectangle((33, 0, 63, 63), fill=(200, 120, 120))  # same brightness, other hue
+    out = io.BytesIO()
+    picture.save(out, "PNG")
+    faded = Image.open(io.BytesIO(fade_colors(out.getvalue()))).convert("L")
+    assert faded.getpixel((32, 30)) < faded.getpixel((10, 30)) - 20  # the border is drawn darker
+    assert fade_colors(b"not a picture") == b"not a picture"
+
+
+async def test_recolor_edit_and_refine_fade_the_old_colors(mock_api, comfy, events, monkeypatch):
+    import base64
+    bot = image_bot(mock_api.base_url, comfy.url)
+    blue = _picture((40, 90, 230))
+    mock_api.reply = "1girl, (red hair:1.3), horns AVOID: blue hair SIZE: big RECOLOR"
+    msg = FakeMessage("!edit 把头发改成红色", FakeChannel(BOT_CHANNEL), attachments=[FakeAttachment(blue, "image/png")])
+    await bot.on_message(msg)
+    await finish(bot)
+    job = comfy.jobs[0]
+    assert job["2"]["inputs"]["text"] == "1girl, (red hair:1.3), horns" and "RECOLOR" not in job["3"]["inputs"]["text"]
+    sent = base64.b64decode(job["8"]["inputs"]["image"])
+    assert _colorfulness(sent) < _colorfulness(blue) * 0.5 and job["5"]["inputs"]["denoise"] == 0.75
+    mock_api.reply = "ADD: smile SIZE: small"
+    await bot.on_message(FakeMessage("!refine smile", FakeChannel(BOT_CHANNEL)))
+    await finish(bot)
+    assert base64.b64decode(comfy.jobs[1]["8"]["inputs"]["image"]) == PNG  # no recolor: the last picture as is
+    monkeypatch.setattr(imagegen, "fade_colors", lambda data: b"FADED")
+    mock_api.reply = "ADD: green hair REMOVE: (red hair:1.3) SIZE: big RECOLOR"
+    await bot.on_message(FakeMessage("!refine green hair", FakeChannel(BOT_CHANNEL)))
+    await finish(bot)
+    assert base64.b64decode(comfy.jobs[2]["8"]["inputs"]["image"]) == b"FADED"
+    assert "RECOLOR" not in comfy.jobs[2]["2"]["inputs"]["text"] + comfy.jobs[2]["3"]["inputs"]["text"]
