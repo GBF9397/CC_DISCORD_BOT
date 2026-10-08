@@ -363,15 +363,22 @@ class ChatBot(discord.Client):
                 await interaction.response.send_message("That time has already passed. 这个时间已经过了。",
                                                         ephemeral=True)
                 return
+            await interaction.response.defer(thinking=True)  # Discord gives up on a reply after 3 seconds
+            log.info("Creating an event in guild %s", interaction.guild.id)
             try:
                 created = await interaction.guild.create_scheduled_event(
                     name=name[:100], start_time=start, end_time=start + timedelta(hours=hours),
                     entity_type=discord.EntityType.external, privacy_level=discord.PrivacyLevel.guild_only,
                     location=place[:100], description=details[:1000])
             except discord.Forbidden:
-                await interaction.response.send_message(NO_EVENT_PERMISSION, ephemeral=True)
+                await interaction.followup.send(NO_EVENT_PERMISSION)
                 return
-            await interaction.response.send_message(
+            except discord.HTTPException as e:
+                log.warning("Creating an event failed: HTTP %s, code %s", e.status, e.code)
+                await interaction.followup.send(f"Discord refused the event (HTTP {e.status}, code {e.code}). "
+                                                "Discord 拒绝了这个活动。")
+                return
+            await interaction.followup.send(
                 f"📅 {interaction.user.display_name} created an event 建了一个活动: **{created.name}**\n"
                 f"🕒 <t:{int(start.timestamp())}:F>\n📍 {created.location}\n{created.url}")
 

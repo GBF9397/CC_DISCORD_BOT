@@ -329,8 +329,16 @@ class FakeResponse:
 
 
 def slash_interaction(guild=None):
+    response = FakeResponse()
+
+    async def defer(thinking=False):
+        pass
+
+    async def followup(content=None):
+        response.sent.append((content, False, None))
+    response.defer = defer
     return SimpleNamespace(user=SimpleNamespace(id=5, display_name="member"), channel_id=CHANNEL,
-                           guild=guild, response=FakeResponse())
+                           guild=guild, response=response, followup=SimpleNamespace(send=followup))
 
 
 def test_poll_answers_split_and_default_to_yes_no():
@@ -370,6 +378,8 @@ def test_event_start_reads_dates_and_times():
 
 
 class FakeGuild:
+    id = 1
+
     def __init__(self, forbidden=False):
         self.forbidden, self.created = forbidden, None
 
@@ -401,7 +411,7 @@ async def test_event_command_refuses_bad_or_past_times_and_missing_permission(mo
                               (future, "20:30", FakeGuild(forbidden=True))):
         interaction = slash_interaction(guild)
         await cmd(interaction, "x", date, time, "here", 2.0, "")
-        assert interaction.response.sent[0][1] is True and guild.created is None
+        assert guild.created is None
     assert interaction.response.sent[0][0] == NO_EVENT_PERMISSION
 
 
