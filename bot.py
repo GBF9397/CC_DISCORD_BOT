@@ -470,6 +470,23 @@ class ChatBot(discord.Client):
             await message.reply("Memory for this channel cleared.", mention_author=False)
             return
 
+        if text.startswith("！event"):  # full-width ！ from a Chinese keyboard
+            text = "!" + text[1:]
+        if text.split(" ", 1)[0].lower() == "!event" and message.guild is not None:  # works in any channel
+            parts = [p.strip() for p in re.split(r"[|｜]", text[len("!event"):])]
+            if len(parts) < 4 or not all(parts[:4]):
+                await message.reply(EVENT_USAGE, mention_author=False)
+                return
+            hours = 2.0
+            if len(parts) > 4 and parts[4]:
+                try:
+                    hours = min(max(float(parts[4].rstrip("小时hH ")), 0.25), 72.0)
+                except ValueError:
+                    pass
+            await message.reply(await self.create_event(message.guild, message.author.display_name,
+                                                        *parts[:4], hours, " | ".join(parts[5:])),
+                                mention_author=False)
+            return
         mentioned = self.user in message.mentions
         in_bot_channel = message.channel.id in self.config["channel_ids"]
         if not (mentioned or in_bot_channel):
@@ -500,21 +517,6 @@ class ChatBot(discord.Client):
             notice = self.queue_picture(text[len(command):].strip(), message.channel.id, message.author.id,
                                         command == "!refine", send, edit)
             notice_message = await message.reply(notice, mention_author=False)
-            return
-        if command == "!event" and message.guild is not None:
-            parts = [p.strip() for p in re.split(r"[|｜]", text[len(command):])]
-            if len(parts) < 4 or not all(parts[:4]):
-                await message.reply(EVENT_USAGE, mention_author=False)
-                return
-            hours = 2.0
-            if len(parts) > 4 and parts[4]:
-                try:
-                    hours = min(max(float(parts[4].rstrip("小时hH ")), 0.25), 72.0)
-                except ValueError:
-                    pass
-            await message.reply(await self.create_event(message.guild, message.author.display_name,
-                                                        *parts[:4], hours, " | ".join(parts[5:])),
-                                mention_author=False)
             return
         search = text.lower().startswith("!search ")
         if search:
