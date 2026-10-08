@@ -182,6 +182,7 @@ async def test_character_persona_looks_things_up_quietly(mock_api):
     brain.set_persona(1, "a grumpy cat")
     assert brain.lore_query(1, "who are you?") is None
 
+    mock_api.reply = "I am Furina!"
     await brain.ask(1, "Ep", "who are you?", lore="Opera Epiclese")
     sent = mock_api.requests[-1]["messages"][-1]["content"]
     assert "Opera Epiclese" in sent and "looked up quietly" in sent and sent.count("Ep: who are you?") == 1

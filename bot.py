@@ -401,7 +401,8 @@ def main():
     for name in ("httpx", "httpx2"):  # their INFO lines carry request URLs
         logging.getLogger(name).setLevel(logging.WARNING)
     for name in ("primp", "ddgs"):  # their lines carry web search queries; search.py logs failures itself
-        logging.getLogger(name).disabled = True
+        # A level, not .disabled: child loggers like "ddgs.ddgs" ignore a disabled parent.
+        logging.getLogger(name).setLevel(logging.CRITICAL + 1)
     ChatBot(config).run(config["token"], root_logger=True)
 
 

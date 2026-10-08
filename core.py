@@ -1,6 +1,7 @@
 """Model access, per-channel memory and reply splitting. No Discord code here."""
 import asyncio
 import base64
+import logging
 import os
 import random
 import re
@@ -10,6 +11,8 @@ from datetime import date
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
 from search import is_fact_question
+
+log = logging.getLogger("bot")
 
 SYSTEM_PROMPT = (
     "You are a member of a Discord server chatting with friends, not a customer-service "
@@ -331,7 +334,9 @@ class Brain:
                 )
             except (APIConnectionError, APITimeoutError):
                 return OFFLINE_MESSAGE
-            except APIStatusError:
+            except APIStatusError as e:
+                # LM Studio's own error text, e.g. a picture it can't read; no member content.
+                log.warning("LM Studio refused a chat request: %s %s", e.status_code, str(e.message)[:150])
                 return ERROR_MESSAGE
             # Gemma 4 puts its reasoning in reasoning_content; only content is posted.
             reply = (resp.choices[0].message.content or "").strip() or "..."
