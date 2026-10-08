@@ -383,7 +383,7 @@ async def test_refine_builds_on_each_members_own_picture(mock_api, comfy, events
     await bot.on_message(FakeMessage("!refine add a hat", ch, author_id=1))
     await finish(bot)
     asked = mock_api.requests[-1]["messages"][0]["content"][0]["text"]
-    assert "prompt: a cat" in asked and "dog" not in asked
+    assert "[Tags]\na cat" in asked and "dog" not in asked
     cat, dog, _, cat_hat = comfy.jobs
     assert cat_hat["5"]["inputs"]["seed"] == cat["5"]["inputs"]["seed"]
     early = FakeMessage("!refine night", ch, author_id=3)
@@ -411,7 +411,7 @@ async def test_recall_goes_back_and_branches_without_losing_pictures(mock_api, c
     mock_api.reply = "girl, medium hair, red ribbon"
     await bot.on_message(FakeMessage("!refine add a ribbon", ch))
     await finish(bot)
-    assert "prompt: girl, medium hair" in mock_api.requests[-1]["messages"][0]["content"][0]["text"]
+    assert "[Tags]\ngirl, medium hair\n" in mock_api.requests[-1]["messages"][0]["content"][0]["text"]
     pictures, base = bot.images.history(BOT_CHANNEL, 1)
     assert len(pictures) == 4 and base == 3  # the very long hair one is still there
     for _ in range(3):
@@ -423,20 +423,51 @@ async def test_recall_goes_back_and_branches_without_losing_pictures(mock_api, c
     assert bad.replies[0].startswith("Pick 1 to 5")
 
 
-async def test_changed_tags_win_and_replaced_ones_go_to_the_negative(mock_api, comfy, events):
+async def test_refine_only_touches_what_the_member_asked_for(mock_api, comfy, events):
+    """Gemma lists the edits and the code applies them: every other tag stays, round after round."""
+    bot = image_bot(mock_api.base_url, comfy.url)
+    ch = FakeChannel(BOT_CHANNEL)
+    mock_api.reply = "1girl, short hair, bob cut, green hair, smile, black sweater AVOID: lowres"
+    await bot.on_message(FakeMessage("!draw a girl", ch))
+    await finish(bot)
+    mock_api.reply = "ADD: medium hair REMOVE: short hair, Bob Cut AVOID: SIZE: medium"
+    await bot.on_message(FakeMessage("!refine hair to the shoulders", ch))
+    await finish(bot)
+    job = comfy.jobs[-1]
+    assert job["2"]["inputs"]["text"] == "1girl, (medium hair:1.3), green hair, smile, black sweater"
+    assert job["3"]["inputs"]["text"].endswith("signature, short hair, bob cut, lowres")
+    # Redrawn from the last picture, only as much as a medium change needs.
+    assert job["8"]["inputs"]["image"] == "iVBORyBmYWtl" and job["5"]["inputs"]["denoise"] == 0.6
+    asked = mock_api.requests[-1]["messages"][0]["content"][0]["text"]
+    assert "[Tags]\n1girl, short hair, bob cut, green hair, smile, black sweater\n" in asked
+    assert "medium hair (to the shoulders)" in asked
+    mock_api.reply = "ADD: natural skin AVOID: pale skin SIZE: small"
+    await bot.on_message(FakeMessage("!refine natural skin", ch))
+    await finish(bot)
+    job = comfy.jobs[-1]
+    # The hair change from last round stays, without its extra weight; short hair stays avoided.
+    assert job["2"]["inputs"]["text"] == "1girl, (natural skin:1.3), medium hair, green hair, smile, black sweater"
+    assert "short hair, bob cut, lowres" in job["3"]["inputs"]["text"] and "pale skin" in job["3"]["inputs"]["text"]
+    assert job["5"]["inputs"]["denoise"] == 0.45
+    mock_api.reply = "ADD: running REMOVE: smile SIZE: new"
+    await bot.on_message(FakeMessage("!refine make her run", ch))
+    await finish(bot)
+    assert "8" not in comfy.jobs[-1] and comfy.jobs[-1]["5"]["inputs"]["denoise"] == 1.0  # starts over, same seed
+    assert comfy.jobs[-1]["5"]["inputs"]["seed"] == comfy.jobs[0]["5"]["inputs"]["seed"]
+
+
+async def test_refine_draws_again_when_comfyui_lacks_the_node(mock_api, comfy, events):
+    comfy.has_edit_node = False
     bot = image_bot(mock_api.base_url, comfy.url)
     ch = FakeChannel(BOT_CHANNEL)
     mock_api.reply = "1girl, short hair"
     await bot.on_message(FakeMessage("!draw a girl", ch))
     await finish(bot)
-    mock_api.reply = "(medium hair:1.3), 1girl AVOID: short hair, very short hair"
-    await bot.on_message(FakeMessage("!refine hair to the shoulders", ch))
+    mock_api.reply = "ADD: red hair SIZE: small"
+    msg = FakeMessage("!refine red hair", ch)
+    await bot.on_message(msg)
     await finish(bot)
-    job = comfy.jobs[-1]
-    assert job["2"]["inputs"]["text"] == "(medium hair:1.3), 1girl"
-    assert job["3"]["inputs"]["text"].endswith("signature, short hair, very short hair")
-    asked = mock_api.requests[-1]["messages"][0]["content"][0]["text"]
-    assert "medium hair (to the shoulders)" in asked and "AVOID:" in asked
+    assert msg.replies[1].filename == "image.png" and "8" not in comfy.jobs[-1]
 
 
 async def test_realistic_pictures_keep_anime_out(mock_api, comfy, events):
@@ -472,11 +503,12 @@ async def test_edit_redraws_the_uploaded_picture_without_saving_it(mock_api, com
     asked = mock_api.requests[-1]["messages"][0]["content"]
     assert "make the hair red" in asked[0]["text"]
     assert asked[1]["image_url"]["url"] == "data:image/jpeg;base64,SlBFR0RBVEE="  # Gemma sees the upload
-    mock_api.reply = "(red hair:1.3), 1girl, smile"
+    mock_api.reply = "ADD: smile SIZE: small"
     await bot.on_message(FakeMessage("!refine smile", ch))
     await finish(bot)
     again = comfy.jobs[1]
-    assert again["8"]["inputs"]["image"] == "SlBFR0RBVEE="  # refined from the upload again, same seed
+    assert again["2"]["inputs"]["text"] == "(red hair:1.3), (smile:1.3), 1girl"
+    assert again["8"]["inputs"]["image"] == "iVBORyBmYWtl"  # refined from the edited picture, same seed
     assert again["5"]["inputs"]["seed"] == job["5"]["inputs"]["seed"]
 
 

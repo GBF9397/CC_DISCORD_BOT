@@ -35,30 +35,40 @@ PROMPT_WRITER = (
     "even one you think you know), reply only SEARCH: <its name and series>.\n\n"
     "[Request]\n{request}"
 )
-# Rules shared by /refine and /edit, so the change members ask for wins over the old picture.
-CHANGE_RULES = (
-    "The change always wins over the old prompt and the picture: delete every old tag it "
-    "contradicts (asking for shoulder-length hair means short hair must go), put the changed "
-    "tags first with weight 1.3, like (medium hair:1.3), and keep everything else. Use the "
-    "drawing model's own words: hair length from shortest is very short hair, short hair, "
+# Drawing-model vocabulary for /refine and /edit, so a requested change lands where the member meant.
+TAG_WORDS = (
+    "Use the drawing model's own words: hair length from shortest is very short hair, short hair, "
     "medium hair (to the shoulders), long hair (past the shoulders), very long hair (to the "
-    "waist); hairstyle tags like bob cut or pixie cut also fix the length, so drop them when the "
-    "length changes and add them after AVOID:; for a bit longer, shorter, bigger or darker move one step, not to the extreme. "
-    "Write color codes like #98FB98 as color names (pale green hair). Something the change "
-    "says to remove (no backlight) goes after AVOID:, never into the prompt. "
-    "Reply with only the new prompt, comma-separated English tags, under 60 words, {style} "
-    "then on the same line AVOID: and the old tags the change replaced (like AVOID: short hair). "
+    "waist); hairstyle tags like bob cut or pixie cut also fix the length, so they go when the "
+    "length changes; for a bit longer, shorter, bigger or darker move one step, not to the extreme. "
+    "Write color codes like #98FB98 as color names (pale green hair). "
+)
+SAFETY = (
     "If the change makes it sexual and involving anyone who is or looks under 18, or a sexual "
     "or degrading picture of a real person, reply only REFUSED. If the change names a specific "
     "character, person, place, product or artwork (a proper name, even one you think you know), "
     "reply only SEARCH: <its name and series>."
 )
-# For /refine: change the member's chosen picture; the same seed keeps the overall look.
+# For /edit: the change wins over what the uploaded picture shows.
+CHANGE_RULES = (
+    "The change always wins over the picture: leave out everything it contradicts, put the changed "
+    "tags first with weight 1.3, like (medium hair:1.3), and keep everything else. " + TAG_WORDS +
+    "Reply with only the new prompt, comma-separated English tags, under 60 words, {style} "
+    "then on the same line AVOID: and the tags the change got rid of (like AVOID: short hair, backlighting). "
+    + SAFETY
+)
+# For /refine: Gemma lists only the edits and the code applies them, so every tag the member
+# didn't mention stays exactly as it was, however many rounds they refine.
 REFINER = (
-    "Here is a Stable Diffusion prompt: {prompt}\n\nChange it as asked below. If the picture "
-    "drawn from it is attached, make the prompt also describe what it shows (subject, colors, "
-    "fur or hair, clothes, pose, background) so the parts the change doesn't touch stay the same. "
-    + CHANGE_RULES + "\n\n[Change]\n{request}"
+    "Here are the tags of a Stable Diffusion picture, which is attached:\n[Tags]\n{prompt}\n\n"
+    "Change it as asked below. Do not rewrite the tags: reply with only the edits on one line, like "
+    "ADD: medium hair REMOVE: short hair, bob cut AVOID: SIZE: medium\n"
+    "ADD: the new tags the change needs. REMOVE: tags from the list above, copied exactly, that the "
+    "change replaces or contradicts. AVOID: things the change gets rid of that are not in the list "
+    "(no backlight means AVOID: backlighting). SIZE: small for colors, expression or lighting; medium "
+    "for clothes, hair or background; big for pose, framing, or adding or removing someone; new to "
+    "draw it again from scratch. Every tag you don't remove stays exactly as it is, so only touch "
+    "what the change asks for. " + TAG_WORDS + "{style} " + SAFETY + "\n\n[Change]\n{request}"
 )
 # For /edit: the member's uploaded picture is redrawn by the drawing model with the change.
 EDITOR = (
@@ -76,7 +86,7 @@ STYLE_HINTS = {
                   "is a real person in cosplay."),
 }
 # Added after a SEARCH: reply, so Gemma describes the look for ComfyUI, which has no internet.
-LOOKUP = ("\n\nNow write the prompt (do not reply SEARCH again). Draw only the subject the request "
+LOOKUP = ("\n\nNow reply as asked above (do not reply SEARCH again). Draw only the subject the request "
           "names, never a game screen, menu, logo or character list. First read the web text below to "
           "learn how it looks. Pictures found on the web are attached after any earlier picture; some may "
           "show other characters from the same series, so use only the pictures that match the web text "
@@ -98,6 +108,22 @@ KEEP_VERSIONS = 5  # pictures per member per channel that /recall can go back to
 EDIT_STRENGTH = 0.6  # how much /edit may change the uploaded picture (1.0 = draw from scratch)
 NODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_node.py")
 EDIT_NODE = "BotLoadImageBase64"  # in comfy_node.py, copied into ComfyUI's custom_nodes
+
+EDIT_WORDS = re.compile(r"\b(ADD|REMOVE|AVOID|SIZE):\s*(.*?)(?=\s*\b(?:ADD|REMOVE|AVOID|SIZE):|$)")
+WEIGHTED = re.compile(r"^\((.*?)(?::[\d.]+)?\)$")
+# How much of the last picture a /refine redraws (1.0 = draw again with the same seed).
+REFINE_STRENGTH = {"small": 0.45, "medium": 0.6, "big": 0.75, "new": 1.0}
+MAX_AVOID = 12  # negative tags carried from round to round
+
+
+def split_tags(text):
+    return [t.strip() for t in text.split(",") if t.strip(" .")]
+
+
+def core(tag):
+    """'(medium hair:1.3)' -> 'medium hair', to compare tags whatever their weight."""
+    return WEIGHTED.sub(r"\1", tag.strip()).strip().lower()
+
 
 # Second line of defence in case the prompt writer lets one through.
 SEXUAL = re.compile(r"\b(nsfw|nude|naked|nudity|sex|sexual|porn|hentai|lewd|explicit|topless|"
@@ -128,8 +154,10 @@ class Job:
     source: bytes = None
     style: str = None  # the channel's style when it was asked, see _refine_checkpoint
     prompt: str = ""
-    negative: str = ""
+    tags: list = None  # the prompt's tags, without this round's extra weight
+    negative: list = None
     seed: int = 0
+    strength: float = 1.0  # share of the source picture redrawn; 1.0 when there is none
     png: bytes = None  # the finished picture, kept for /refine and /recall
     source_type: str = "image/png"
 
@@ -258,14 +286,13 @@ class ImageMaker:
                 key = (job.channel_id, job.user_id)
                 old = self.versions[key][self.base[key]]
                 job.checkpoint = self._refine_checkpoint(job, old)
-                # An edited picture is refined from its upload again, like a drawing from its seed.
-                job.seed, job.source, job.source_type = old.seed, old.source, old.source_type
+                job.seed = old.seed
                 instruction = REFINER.format(prompt=old.prompt, request=job.request,
                                              style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
                 # Gemma sees the picture, so a refine keeps details the prompt never named.
                 images = [(old.png, "image/png")]
             elif job.source:
-                job.seed = random.randrange(2**32)
+                job.seed, job.strength = random.randrange(2**32), EDIT_STRENGTH
                 instruction = EDITOR.format(request=job.request, style=STYLE_HINTS.get(self.style_of(job.checkpoint), ""))
                 images = [(job.source, job.source_type)]
             else:
@@ -282,12 +309,39 @@ class ImageMaker:
                     instruction + LOOKUP.format(results=results or "(no results)"), images + found)
             if prompt is None:
                 await self._deliver(job.deliver, job.user_id, None, "Sorry, my brain (LM Studio) is offline right now.")
-            elif prompt.startswith("REFUSED") or blocked(prompt):
+            elif prompt.startswith("REFUSED"):
                 await self._deliver(job.deliver, job.user_id, None, "Sorry, I won't draw that.")
             else:
-                job.prompt, _, job.negative = (part.strip(" ,.") for part in prompt.partition("AVOID:"))
+                if job.refine and EDIT_WORDS.search(prompt):
+                    self._apply_edits(job, old, prompt)
+                else:  # a whole prompt (a refine whose reply ignored the edit format starts over too)
+                    text, _, avoid = prompt.partition("AVOID:")
+                    job.tags, job.negative = split_tags(text), split_tags(avoid)
+                    job.prompt = ", ".join(job.tags)
+                if blocked(job.prompt):
+                    await self._deliver(job.deliver, job.user_id, None, "Sorry, I won't draw that.")
+                    continue
                 jobs.append(job)
         return jobs
+
+    @staticmethod
+    def _apply_edits(job, old, reply):
+        """Apply Gemma's ADD/REMOVE/AVOID/SIZE edits to the old picture's tags. Tags nobody
+        mentioned are copied unchanged, and the picture is redrawn from the old one only as much
+        as the change needs, so the parts that were fine stay fine."""
+        edits = {key: value for key, value in EDIT_WORDS.findall(reply)}
+        add = [core(t) for t in split_tags(edits.get("ADD", ""))]
+        remove = split_tags(edits.get("REMOVE", ""))
+        gone = {core(t) for t in remove} | set(add)
+        kept = [t for t in old.tags if core(t) not in gone]
+        job.tags = kept[:1] + add + kept[1:]  # after the subject (1girl), before the rest
+        job.prompt = ", ".join(kept[:1] + [f"({t}:1.3)" for t in add] + kept[1:])
+        avoid = [core(t) for t in remove + split_tags(edits.get("AVOID", ""))] + old.negative
+        job.negative = list(dict.fromkeys(t for t in avoid if t not in add))[:MAX_AVOID]
+        size = (edits.get("SIZE", "").split() or ["medium"])[0].lower().strip(" .,")
+        job.strength = REFINE_STRENGTH.get(size, REFINE_STRENGTH["medium"])
+        if job.strength < 1:
+            job.source = old.png  # redraw part of the last picture instead of starting over
 
     async def _draw_all(self, jobs):
         await self._start_comfy()
@@ -297,8 +351,10 @@ class ImageMaker:
             for job in jobs:
                 try:
                     if job.source and not await self._has_edit_node():
-                        raise DrawError("Sorry, /edit needs ComfyUI restarted once. Close ComfyUI and "
-                                        "I'll start it again. /edit 需要先重启一次 ComfyUI。")
+                        if not job.refine:
+                            raise DrawError("Sorry, /edit needs ComfyUI restarted once. Close ComfyUI and "
+                                            "I'll start it again. /edit 需要先重启一次 ComfyUI。")
+                        job.source, job.strength = None, 1.0  # a refine draws again with the same seed
                     png = await self._comfy(job, job.progress)
                 except DrawError as e:
                     await self._deliver(job.deliver, job.user_id, None, str(e))
@@ -340,7 +396,7 @@ class ImageMaker:
 
     def _workflow(self, job):
         negative = ", ".join(n for n in (NEGATIVE, STYLE_NEGATIVE.get(self.style_of(job.checkpoint), ""),
-                                         job.negative) if n)
+                                         ", ".join(job.negative)) if n)
         flow = {
             "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": job.checkpoint}},
             "2": {"class_type": "CLIPTextEncode", "inputs": {"text": job.prompt, "clip": ["1", 1]}},
@@ -359,12 +415,12 @@ class ImageMaker:
         }
         flow["5"]["inputs"].update(STYLE_SAMPLER.get(self.style_of(job.checkpoint), {}))
         if job.source:
-            # /edit: the upload goes inside the job, not through ComfyUI's upload (which saves a file),
-            # and is redrawn only partly so it keeps its shape.
+            # /edit and /refine: the picture goes inside the job, not through ComfyUI's upload (which
+            # saves a file), and is redrawn only partly so it keeps its shape.
             flow["8"] = {"class_type": EDIT_NODE, "inputs": {
                 "image": base64.b64encode(job.source).decode(), "size": self.size}}
             flow["4"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["8", 0], "vae": ["1", 2]}}
-            flow["5"]["inputs"]["denoise"] = EDIT_STRENGTH
+            flow["5"]["inputs"]["denoise"] = job.strength
         return flow
 
     async def _comfy(self, job, progress=None):
