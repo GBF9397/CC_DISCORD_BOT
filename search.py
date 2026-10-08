@@ -24,7 +24,8 @@ def needs_search(text):
 # Questions about facts (names, places, who, when...), for a character persona's quiet lookups.
 _FACT_QUESTION = re.compile(
     r"\b(what|who|whose|where|which|when|how (many|much|old|long|tall))\b"
-    r"|叫什么|什么名字|是什么|是谁|谁是|哪里|哪儿|哪个|哪位|哪一|多少|几岁|几个|什么时候|为什么|怎么回事",
+    r"|叫什么|什么名字|是什么|是谁|谁是|哪里|哪儿|哪个|哪位|哪一|多少|几岁|几个|什么时候|为什么|怎么回事"
+    r"|认识|介绍|说说|说一下|讲讲|性格|队友|朋友|关系|宠物",
     re.IGNORECASE,
 )
 

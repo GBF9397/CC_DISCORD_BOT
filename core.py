@@ -69,7 +69,8 @@ CHARACTER_STYLE = (
     " Catchphrases and signature words are seasoning: use one only now and then, and "
     "never repeat a word or phrase from your last few replies; answer what was actually "
     "said or shown, in fresh words. Talk in the member's language: no romanized foreign "
-    "words like mousou, write 妄想. Don't guess who the people in a picture are: say one "
+    "words like mousou, write 妄想; in Chinese, use the official Chinese names of people, "
+    "pets and places. Don't guess who the people in a picture are: say one "
     "is {name} only when it clearly is (face, marks, outfit), and when you can't tell, "
     "react to what is happening in it without naming anyone. Never mock {name}."
 )
@@ -89,7 +90,9 @@ CHARACTER_PROMPT = (
     "250 words: who they are and where they come from (game, anime, book...), personality, "
     "how they talk (tone, how they address people), their teammates, friends, rivals and "
     "family by name with one line each, and a few key facts. Write catchphrases and "
-    "foreign words in Chinese (e.g. 妄想, not mousou). Write it as notes, no intro. If you don't recognise the character, reply only with UNKNOWN.\n\n"
+    "foreign words in Chinese (e.g. 妄想, not mousou), and give every name (people, pets, "
+    "places, items) as the official Chinese version calls it, with the English name in "
+    "brackets (e.g. 泡泡 (Bubblegum)). Write it as notes, no intro. If you don't recognise the character, reply only with UNKNOWN.\n\n"
     "[Web results]\n{results}"
 )
 
