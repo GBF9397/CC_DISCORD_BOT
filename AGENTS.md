@@ -96,12 +96,12 @@ After a test, before any restart: `Select-String -Path bot-error.log -Pattern "E
 | 3 | after 2+ refines: `!recall`, then `!recall 1`, then `!refine 改成蓝色衣服` | `!recall` shows only the previous picture ("回到第 N 张（共 M 张）"); `!recall 1` the first; the refine builds on it; at the first picture `!recall` says 已经是最早的一张 | changed 10-08 (`!recall` = one step back), not tested |
 | 4 | two members `!refine` at the same time | each gets their own picture changed | not tested (Ep, at home) |
 | 5 | `!draw realistic 一个女生` | realistic photo style | not tested |
-| 6 | `!dmdraw 一只猫` | your message disappears; channel shows only "画画中（私人请求）" + countdown/progress, no name; DM "收到…" then the picture by DM | DM + unnamed notice passed 10-08; message NOT deleted (bot lacks Manage Messages in that channel; now it DMs CANT_HIDE) |
+| 6 | `!dmdraw 一只猫` | your message disappears; channel shows only "画画中（私人请求）" + countdown/progress, no name; DM "收到…" then the picture by DM | passed 10-08 once Ep gave the bot Manage Messages (before that the message stayed; now the bot DMs CANT_HIDE in that case) |
 | 7 | `/dmdraw request:一只猫` | only you see "开始画了，画好私信给你"; rest as #6 | not tested |
 | 8 | `!dmedit 第2张的角色穿第1张的衣服` with two pictures | message deleted; result by DM, looks like picture 2's character | 10-08: DM ok but drifted to a generic teal-haired girl (name dropped + faded); fixed: swaps keep the name and are never faded |
 | 9 | `!dmrefine 戴上帽子`, `!dmrecall`, `!dmrecall 1` | refines your last private picture; `!dmrecall` sends only the previous one by DM; public `!recall` doesn't show private pictures | refine/DM passed 10-08; `!dmrecall` now one step back |
 | 10 | turn off DMs from server members, then `!dmdraw 一只猫` | channel reply "我私信不了你…", message stays, nothing drawn | passed 10-08 after turning DMs off in both servers Ep shares with the bot (with one still on, the DM still arrives; that's Discord, not a bug) |
-| 13 | grant the bot **Manage Messages** in #gemma-4-img-sfw, then `!dmdraw 一只猫` | your message is deleted | not tested |
+| 13 | grant the bot **Manage Messages** in #gemma-4-img-sfw, then `!dmdraw 一只猫` | your message is deleted | passed 10-08 (Ep granted it) |
 | 11 | second picture after a restart | queue notice shows `⏱️ 预计 X 分 Y 秒` | passed 10-08 |
 | 12 | two-picture swap `!edit 第2张的角色穿第1张的衣服` | outfit/pose from 1, looks from 2 | passed 10-08 |
 
