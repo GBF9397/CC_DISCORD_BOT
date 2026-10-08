@@ -127,7 +127,7 @@ async def test_long_reply_is_split(mock_api, monkeypatch):
 async def test_slash_commands_registered_and_work(mock_api):
     bot = make_bot(mock_api.base_url)
     names = {c.name for c in bot.tree.get_commands()}
-    assert names == {"ask", "reset", "search", "persona", "poll", "event"}
+    assert names == {"ask", "reset", "search", "persona", "poll", "event", "status"}
 
     sent = []
     async def followup_send(text):

@@ -1,4 +1,5 @@
 """Discord chat bot backed by the local Gemma 4 Bionic model in LM Studio."""
+import asyncio
 import io
 import logging
 import os
@@ -14,6 +15,7 @@ from dotenv import load_dotenv
 
 from core import (CUSTOM_MAX_CHARS, PERSONAS, Brain, ChannelMemory, apply_extras, extras_note,
                   load_config, load_meanings, split_message)
+import monitor
 from imagegen import DrawError, ImageMaker
 from search import needs_search, web_search
 
@@ -33,6 +35,7 @@ QUEUED_NOTICE = ("🎨 Queued, {ahead} picture(s) ahead of you. I'll chat again 
                  "已排队，前面还有 {ahead} 张，全部画完我才回来聊天。")
 ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
                   "你已经有一张在排队了，画完才能再点。")
+STATUS_EVERY, STATUS_UPDATES = 2.5, 20  # /status refreshes about every 3 s for a minute
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
@@ -335,6 +338,21 @@ class ChatBot(discord.Client):
             await interaction.response.send_message(
                 f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
 
+        @self.tree.command(name="status", description="Show how busy the bot's PC is (graphics card, CPU, RAM)")
+        async def status(interaction: discord.Interaction):
+            # Works while drawing too, so members can see the graphics card load.
+            async def reading():
+                stats = await asyncio.to_thread(monitor.read, 0.5)
+                return "```\n" + "\n".join(monitor.lines(stats)) + "\n```"
+
+            await interaction.response.send_message(await reading(), ephemeral=True)
+            for _ in range(STATUS_UPDATES):  # live for a while, then the last reading stays
+                await asyncio.sleep(STATUS_EVERY)
+                try:
+                    await interaction.edit_original_response(content=await reading())
+                except discord.HTTPException:  # the member dismissed it
+                    return
+
         @self.tree.command(name="poll", description="Start a poll members vote on")
         @app_commands.describe(question="What to vote on",
                                options="Answers split by | , or /, e.g. '是 | 不是'; leave empty for yes/no",
@@ -547,6 +565,8 @@ def main():
     if not config["token"]:
         sys.exit("DISCORD_TOKEN is missing. Copy .env.example to .env and paste your bot token there.")
     lower_priority()
+    if config["monitor_window"]:
+        monitor.open_window()
     for name in ("httpx", "httpx2"):  # their INFO lines carry request URLs
         logging.getLogger(name).setLevel(logging.WARNING)
     for name in ("primp", "ddgs"):  # their lines carry web search queries; search.py logs failures itself
