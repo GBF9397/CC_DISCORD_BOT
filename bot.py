@@ -470,7 +470,7 @@ class ChatBot(discord.Client):
             await message.reply("Memory for this channel cleared.", mention_author=False)
             return
 
-        if text.startswith("！event"):  # full-width ！ from a Chinese keyboard
+        if text.startswith(("！event", "/event ")):  # full-width ！, or a pasted /event line Discord sent as text
             text = "!" + text[1:]
         if text.split(" ", 1)[0].lower() == "!event" and message.guild is not None:  # works in any channel
             parts = [p.strip() for p in re.split(r"[|｜]", text[len("!event"):])]

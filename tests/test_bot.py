@@ -465,7 +465,7 @@ async def test_bang_event_creates_an_event_from_one_line(mock_api):
     bot = make_bot(mock_api.base_url)
     guild = FakeGuild()
     date = (datetime.now() + timedelta(days=3)).strftime("%m-%d")
-    msg = FakeMessage(f"!event 电影夜 | {date} | 8:30pm | 语音频道 | 3", FakeChannel(CHANNEL), guild=guild)
+    msg = FakeMessage(f"/event 电影夜 | {date} | 8:30pm | 语音频道 | 3", FakeChannel(CHANNEL), guild=guild)
     await bot.on_message(msg)
     assert guild.created["name"] == "电影夜" and guild.created["location"] == "语音频道"
     assert guild.created["start_time"].strftime("%H:%M") == "20:30"
