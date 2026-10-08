@@ -41,7 +41,7 @@ class FakeMessage:
 
     async def reply(self, text=None, mention_author=True, file=None, view=None):
         self.replies.append(text if file is None else file)
-        self.mentioned = mention_author
+        self.mentioned, self.view = mention_author, view
         self.sent = FakeSent()
         return self.sent
 
@@ -699,3 +699,67 @@ def test_event_fields_can_come_in_any_order():
     assert event_fields(["电影夜", "10-10", "8:30pm", "语音频道"])[4] == 2.0  # default
     assert event_fields(["电影夜", "10-10", "8:30pm"]) is None  # no place
     assert event_fields(["电影夜", "语音频道", "8:30pm"]) is None  # no date
+
+
+def test_event_menus_list_25_days_and_name_the_hours():
+    from bot import event_date_options, hour_label
+    now = datetime(2026, 10, 10, 15, 0).astimezone()
+    days = event_date_options(now)
+    assert len(days) == 25 and days[0] == ("2026-10-10", "10-10 周六（今天）") and days[1][1].endswith("（明天）")
+    assert hour_label(20) == "晚上8点 (20:00)" and hour_label(0) == "凌晨12点 (00:00)" and hour_label(12) == "中午12点 (12:00)"
+
+
+async def test_bare_event_offers_a_form_button(mock_api):
+    from bot import EventFormButton
+    bot = make_bot(mock_api.base_url)
+    msg = FakeMessage("!event", FakeChannel(CHANNEL), guild=FakeGuild())
+    await bot.on_message(msg)
+    button = msg.view.children[0]
+    assert isinstance(button, EventFormButton) and button.item.custom_id == "eventform"
+
+
+async def test_slash_event_without_details_opens_the_form(mock_api):
+    from bot import EventForm
+    bot = make_bot(mock_api.base_url)
+    interaction = slash_interaction(FakeGuild())
+    opened = []
+
+    async def send_modal(modal):
+        opened.append(modal)
+    interaction.response.send_modal = send_modal
+    await bot.tree.get_command("event").callback(interaction, "电影夜", "", "", "", 2.0, "")
+    assert isinstance(opened[0], EventForm) and opened[0].event_name.default == "电影夜"
+
+
+async def test_event_picker_creates_the_event_from_the_menus(mock_api):
+    from bot import EventPicker
+    bot = make_bot(mock_api.base_url)
+    guild = FakeGuild()
+    picker = EventPicker("电影夜", "语音频道", "带零食")
+    day = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+    picker.date, picker.hour, picker.minute, picker.hours = day, 21, 30, 3.0
+    sent = []
+
+    async def defer():
+        pass
+
+    async def edit_original_response(content=None, view=None):
+        sent.append(("edit", content))
+
+    async def followup(text, view=None, ephemeral=False):
+        sent.append((text, view, ephemeral))
+    interaction = SimpleNamespace(client=bot, guild=guild, user=SimpleNamespace(id=5, display_name="Ep"),
+                                  response=SimpleNamespace(defer=defer),
+                                  edit_original_response=edit_original_response,
+                                  followup=SimpleNamespace(send=followup))
+    await picker.create(interaction)
+    made = guild.created
+    assert made["name"] == "电影夜" and made["location"] == "语音频道" and made["description"] == "带零食"
+    assert made["start_time"].strftime("%Y-%m-%d %H:%M") == f"{day} 21:30"
+    assert made["end_time"] - made["start_time"] == timedelta(hours=3)
+    assert "电影夜" in sent[-1][0] and not sent[-1][2]  # posted for everyone
+
+    picker.date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    sent.clear()
+    await picker.create(interaction)
+    assert "already passed" in sent[0][0] and sent[0][2]  # only the maker sees the problem, menus stay

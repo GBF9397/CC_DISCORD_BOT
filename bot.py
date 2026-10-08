@@ -227,6 +227,95 @@ class EndEventButton(discord.ui.DynamicItem[discord.ui.Button],
         await interaction.followup.send(f"📅 {interaction.user.display_name} ended the event 结束了活动。")
 
 
+PICK_EVENT_TIME = "Pick the date, time and length, then press Create. 选好日期、时间和时长，再点「创建」。"
+EVENT_LENGTHS = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0)
+
+
+def event_date_options(now=None):
+    """The next 25 days (Discord's most per menu) as (2026-10-10, '10-10 周六（今天）')."""
+    now = now or datetime.now().astimezone()
+    days = [now + timedelta(days=i) for i in range(25)]
+    return [(d.strftime("%Y-%m-%d"), f"{d:%m-%d} 周{'一二三四五六日'[d.weekday()]}" + ("（今天）", "（明天）", "")[min(i, 2)])
+            for i, d in enumerate(days)]
+
+
+def hour_label(hour):
+    part = "凌晨" if hour < 6 else "上午" if hour < 12 else "中午" if hour == 12 else "下午" if hour < 18 else "晚上"
+    return f"{part}{hour % 12 or 12}点 ({hour:02d}:00)"
+
+
+class EventPicker(discord.ui.View):
+    """Menus for an event's date, start and length; only its maker sees them. Defaults: today 20:00, 2 hours."""
+    def __init__(self, name, place, details):
+        super().__init__(timeout=600)
+        self.name, self.place, self.details = name, place, details
+        dates = event_date_options()
+        self.date, self.hour, self.minute, self.hours = dates[0][0], 20, 0, 2.0
+        self.menu("日期 Date", dates, "date")
+        self.menu("几点 Hour", [(h, hour_label(h)) for h in range(24)], "hour")
+        self.menu("几分 Minute", [(m, f"{m:02d} 分") for m in (0, 15, 30, 45)], "minute")
+        self.menu("时长 Length", [(h, f"{h:g} 小时 hours") for h in EVENT_LENGTHS], "hours")
+        create = discord.ui.Button(label="Create 创建", style=discord.ButtonStyle.success)
+        create.callback = self.create
+        self.add_item(create)
+
+    def menu(self, placeholder, options, field):
+        default = getattr(self, field)
+        select = discord.ui.Select(placeholder=placeholder, options=[
+            discord.SelectOption(label=label, value=str(value), default=value == default) for value, label in options])
+
+        async def chosen(interaction):
+            setattr(self, field, type(default)(select.values[0]))
+            await interaction.response.defer()
+        select.callback = chosen
+        self.add_item(select)
+
+    async def create(self, interaction):
+        await interaction.response.defer()
+        text, view = await interaction.client.create_event(
+            interaction.guild, interaction.user, self.name, self.date, f"{self.hour}:{self.minute:02d}",
+            self.place, self.hours, self.details)
+        if view is discord.utils.MISSING:  # e.g. the time has passed: say so and keep the menus
+            await interaction.followup.send(text, ephemeral=True)
+            return
+        self.stop()
+        await interaction.edit_original_response(content="✅", view=None)
+        await interaction.followup.send(text, view=view)
+
+
+class EventForm(discord.ui.Modal, title="Create an event 创建活动"):
+    """Typed parts of an event; the date and time are then picked from menus."""
+    event_name = discord.ui.TextInput(label="名称 Name", max_length=100)
+    place = discord.ui.TextInput(label="地点 Place", max_length=100)
+    details = discord.ui.TextInput(label="说明 Details (optional)", style=discord.TextStyle.paragraph,
+                                   required=False, max_length=1000)
+
+    def __init__(self, name="", place="", details=""):
+        super().__init__()
+        self.event_name.default, self.place.default, self.details.default = name or None, place or None, details or None
+
+    async def on_submit(self, interaction):
+        await interaction.response.send_message(PICK_EVENT_TIME, ephemeral=True, view=EventPicker(
+            self.event_name.value, self.place.value, self.details.value))
+
+
+class EventFormButton(discord.ui.DynamicItem[discord.ui.Button], template=r"eventform"):
+    """Under a bare !event: opens the event form, since a typed message can't open one itself."""
+    def __init__(self):
+        super().__init__(discord.ui.Button(label="📅 Create event 创建活动", style=discord.ButtonStyle.primary,
+                                           custom_id="eventform"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls()
+
+    async def callback(self, interaction):
+        if not interaction.client.allowed(interaction.user):
+            await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+            return
+        await interaction.response.send_modal(EventForm())
+
+
 def end_view(item):
     view = discord.ui.View(timeout=None)
     view.add_item(item)
@@ -570,14 +659,17 @@ class ChatBot(discord.Client):
         @app_commands.describe(name="What the event is", date="Date, e.g. 2026-10-10 or 10-10",
                                time="Start time, e.g. 20:30, 8:30pm or 晚上8:30", place="Where it happens",
                                hours="How long it lasts (default 2 hours)", details="More about it (optional)")
-        async def event(interaction: discord.Interaction, name: str, date: str, time: str, place: str,
-                        hours: app_commands.Range[float, 0.25, 72.0] = 2.0, details: str = ""):
+        async def event(interaction: discord.Interaction, name: str = "", date: str = "", time: str = "",
+                        place: str = "", hours: app_commands.Range[float, 0.25, 72.0] = 2.0, details: str = ""):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
             if interaction.guild is None:
                 await interaction.response.send_message("Events only work in a server. 活动只能在服务器里建。",
                                                         ephemeral=True)
+                return
+            if not (name and date and time and place):  # pick the date and time from menus instead
+                await interaction.response.send_modal(EventForm(name, place, details))
                 return
             await interaction.response.defer(thinking=True)  # Discord gives up on a reply after 3 seconds
             text, view = await self.create_event(interaction.guild, interaction.user, name, date, time, place,
@@ -627,7 +719,7 @@ class ChatBot(discord.Client):
             await interaction.response.send_message(self.change_style(interaction.channel_id, style))
 
     async def setup_hook(self):
-        self.add_dynamic_items(EndPollButton, EndEventButton)
+        self.add_dynamic_items(EndPollButton, EndEventButton, EventFormButton)
         await self.tree.sync()
 
     async def on_ready(self):
@@ -693,6 +785,10 @@ class ChatBot(discord.Client):
             await message.reply("Memory for this channel cleared.", mention_author=False)
             return
         if command == "!event" and message.guild is not None:
+            if not rest:  # nothing typed: offer the form with menus
+                await message.reply("Press to create an event. 点按钮创建活动。", view=end_view(EventFormButton()),
+                                    mention_author=False)
+                return
             fields = event_fields([p.strip() for p in re.split(r"[|｜]", rest)])
             if fields is None:
                 await message.reply(EVENT_USAGE, mention_author=False)
