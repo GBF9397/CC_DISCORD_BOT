@@ -725,7 +725,8 @@ async def test_recolor_edit_and_refine_fade_the_old_colors(mock_api, comfy, even
     job = comfy.jobs[0]
     assert job["2"]["inputs"]["text"] == "1girl, (red hair:1.3), horns" and "RECOLOR" not in job["3"]["inputs"]["text"]
     sent = base64.b64decode(job["8"]["inputs"]["image"])
-    assert _colorfulness(sent) < _colorfulness(blue) * 0.5 and job["5"]["inputs"]["denoise"] == 0.75
+    # Big change, but fading frees the color, so it redraws only 60% and the shapes stay.
+    assert _colorfulness(sent) < _colorfulness(blue) * 0.5 and job["5"]["inputs"]["denoise"] == 0.6
     mock_api.reply = "ADD: smile SIZE: small"
     await bot.on_message(FakeMessage("!refine smile", FakeChannel(BOT_CHANNEL)))
     await finish(bot)

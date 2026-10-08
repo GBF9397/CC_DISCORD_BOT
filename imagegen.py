@@ -171,6 +171,8 @@ EDIT_NODE = "BotLoadImageBase64"  # in comfy_node.py, copied into ComfyUI's cust
 SIZE_WORD = re.compile(r"\bSIZE:\s*(\w+)")
 RECOLOR_WORD = re.compile(r"\s*\bRECOLOR\b")
 KEEP_COLOR = 0.35  # share of the old colors left in a picture before a recolor
+# Fading already frees the color, so a recolor redraws less and the shapes (horns, pose) stay.
+RECOLOR_STRENGTH = 0.6
 EDIT_WORDS = re.compile(r"\b(ADD|REMOVE|AVOID|SIZE):\s*(.*?)(?=\s*\b(?:ADD|REMOVE|AVOID|SIZE):|$)")
 WEIGHTED = re.compile(r"^\((.*?)(?::[\d.]+)?\)$")
 # How much of the last picture a /refine redraws (1.0 = draw again with the same seed). Every asked-for
@@ -452,7 +454,9 @@ class ImageMaker:
                     await self._deliver(job.deliver, job.user_id, None, "Sorry, I won't draw that.")
                     continue
                 if job.recolor and job.source and job.strength < 1:
-                    log.info("Recolor: fading the old colors before redrawing")
+                    if not swap:  # a new character needs its face redrawn, so a swap keeps its share
+                        job.strength = min(job.strength, RECOLOR_STRENGTH)
+                    log.info("Recolor: fading the old colors before redrawing, redrawing %d%%", job.strength * 100)
                     job.source = await asyncio.to_thread(fade_colors, job.source)
                 jobs.append(job)
         return jobs
