@@ -186,6 +186,9 @@ class EndEventButton(discord.ui.DynamicItem[discord.ui.Button],
         except discord.NotFound:
             pass  # already deleted
         except discord.HTTPException as e:
+            if e.code == 180000:  # already ended or cancelled, e.g. by a second click on the same button
+                await interaction.edit_original_response(view=None)
+                return
             log.warning("Ending an event failed: HTTP %s, code %s", e.status, e.code)
             await interaction.followup.send(f"Discord refused to end the event (HTTP {e.status}, code {e.code}). "
                                             "Discord 拒绝结束这个活动。", ephemeral=True)

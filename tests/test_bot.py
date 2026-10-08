@@ -658,3 +658,32 @@ async def test_end_event_says_when_discord_refuses():
                                   response=SimpleNamespace(defer=defer), followup=SimpleNamespace(send=followup))
     await EndEventButton(5, 9).callback(interaction)
     assert "50013" in sent[0][0] and sent[0][1]
+
+
+async def test_end_event_twice_just_removes_the_button():
+    from bot import EndEventButton
+    steps = []
+    event = SimpleNamespace(status=discord.EventStatus.scheduled)
+
+    async def cancel():  # a second click raced the first, which already cancelled it
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), {"code": 180000, "message": ""})
+    event.cancel = cancel
+
+    async def fetch(event_id):
+        return event
+
+    async def defer():
+        pass
+
+    async def edit_original_response(view=None):
+        steps.append("edit")
+
+    async def followup(text, ephemeral=False):
+        steps.append(text)
+    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Ep"),
+                                  guild=SimpleNamespace(fetch_scheduled_event=fetch),
+                                  response=SimpleNamespace(defer=defer),
+                                  edit_original_response=edit_original_response,
+                                  followup=SimpleNamespace(send=followup))
+    await EndEventButton(5, 9).callback(interaction)
+    assert steps == ["edit"]
