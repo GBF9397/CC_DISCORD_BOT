@@ -98,7 +98,9 @@ SWAP_NOTE = (
     "Picture 1 is the one being redrawn. Picture 2 shows a character to put into picture 1: keep "
     "picture 1's clothes, pose, framing and background, but give the person picture 2's looks (hair "
     "colour and style, eye colour, face, skin, horns, ears, hair ornaments), and name the character if "
-    "you know who it is. "
+    "you know who it is. Keep picture 2's character name and series tags even though the outfit is new: "
+    "their usual looks are exactly what is wanted, so the rule about leaving names out doesn't apply, "
+    "and don't write RECOLOR. "
 )
 # Tells Gemma which drawing model will read the prompt.
 STYLE_HINTS = {
@@ -455,9 +457,8 @@ class ImageMaker:
                 if blocked(job.prompt):
                     await self._deliver(job.deliver, job.user_id, None, "Sorry, I won't draw that.")
                     continue
-                if job.recolor and job.source and job.strength < 1:
-                    if not swap:  # a new character needs its face redrawn, so a swap keeps its share
-                        job.strength = min(job.strength, RECOLOR_STRENGTH)
+                if job.recolor and job.source and job.strength < 1 and not swap:  # swaps work better unfaded
+                    job.strength = min(job.strength, RECOLOR_STRENGTH)
                     log.info("Recolor: fading the old colors before redrawing, redrawing %d%%", job.strength * 100)
                     job.source = await asyncio.to_thread(fade_colors, job.source)
                 jobs.append(job)

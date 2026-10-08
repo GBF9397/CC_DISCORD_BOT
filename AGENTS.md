@@ -51,7 +51,8 @@ Every member-facing release gets a short Chinese announcement as a raw markdown 
   - logs `Edit: SIZE x, redrawing N%`, `Refine: ...`, `Recolor: ...` (no message content).
 - **Testing on Ep's PC (2026-10-08 evening):** two-picture swap, countdown, estimate and big uploads work. Red hair on official Ganyu art: at 75% + recolor the hair turned red but horns became cat ears and the pose moved, so recolor was capped at 60% (`22efe04`); Ep is re-testing that. Still to test: 5-6 rounds of `!refine` keeping earlier changes; `!recall` / `!recall 2` then refine; **two people `!refine` at once** (Ep, at home); `!draw realistic 一个女生`. When all pass, Ep merges `claude/task-nb5ft9` into main from the terminal. Update this file's state and README in that same branch before the merge.
 - **Private drawing commands (built on this branch, not yet tested on the PC):** `!dmdraw`/`/dmdraw`, `!dmedit`/`/dmedit` (incl. second character picture), `!dmrefine`/`/dmrefine`, `!dmrecall`/`/dmrecall`. The bot first DMs the member "收到，画好会发到这里"; if the DM fails it says so in the channel and draws nothing. `!dm…` messages are deleted (Manage Messages, as `!comment`); `/dm…` replies are ephemeral. The picture goes only by DM; the channel gets an unnamed "画画中（私人请求）" notice with the countdown/progress (Ep wants it so members know why the bot is quiet). Private pictures live under history key `PRIVATE` (0), one per member across channels, so the public `!recall` never shows them; they keep the asking channel's drawing style (`style_channel`). Code: `bot.private_picture()` for `!dm…`, `draw_command(..., private=True)` for `/dm…`, `queue_picture(private=True)`.
-- If red hair still fails at 60%: try more fading (`KEEP_COLOR` 0.2) or `RECOLOR_STRENGTH` 0.55 (not below half). The real fix is ControlNet lineart/canny or masked inpainting in ComfyUI (Ep installs custom nodes + an SDXL model, ~2.5 GB); offered, not started.
+- Red hair on official Ganyu art failed both ways with plain img2img (75%: red but horns became cat ears; 60%: white hair with red streaks, another person). The real fix is ControlNet lineart/canny or masked inpainting in ComfyUI (Ep installs custom nodes + an SDXL model, ~2.5 GB); offered 10-08, waiting on Ep.
+- 10-08 fixes after Ep's `!dm` test: `!recall`/`!dmrecall` with no number go back one picture and post only that one (short `RECALLED`/`AT_OLDEST` texts, `RECALL_LIST` removed); a `!dm…` request the bot can't delete (no Manage Messages in that channel) gets a `CANT_HIDE` DM; two-picture swaps keep picture 2's name tags and are never faded (`SWAP_NOTE`; the name-dropping and RECOLOR rules had turned Ganyu into a generic teal-haired girl).
 - v1.4 announcement and full command list are drafted (kept on the project side, not in this repo). Next release is **v1.5** (the in-flight image work and `!dm*` go in it).
 
 ## Working rules (save usage)
@@ -90,16 +91,17 @@ After a test, before any restart: `Select-String -Path bot-error.log -Pattern "E
 
 | # | Try | Pass when | Status |
 |---|---|---|---|
-| 1 | `/edit 把头发改成红色` with official Ganyu art | hair red, horns kept, pose close; log `Edit: SIZE big` + `Recolor: ... redrawing 60%` | 60% cap not yet tested (75% turned hair red but changed too much) |
+| 1 | `/edit 把头发改成红色` with official Ganyu art | hair red, horns kept, pose close; log `Edit: SIZE big` + `Recolor: ... redrawing 60%` | FAILED 10-08 at 60%: white hair with red streaks, looked like another person (75%: red hair but cat ears). img2img can't do both; next step is ControlNet (Ep to decide) |
 | 2 | `!refine` 5-6 rounds (red hair, then 戴上帽子, 背景改成晚上, ...) | each round changes only what was asked; earlier changes stay | not tested |
-| 3 | `!recall`, `!recall 2`, then `!refine 改成蓝色衣服` | list of your pictures; the refine changes picture 2; `!recall` still lists all | not tested |
+| 3 | after 2+ refines: `!recall`, then `!recall 1`, then `!refine 改成蓝色衣服` | `!recall` shows only the previous picture ("回到第 N 张（共 M 张）"); `!recall 1` the first; the refine builds on it; at the first picture `!recall` says 已经是最早的一张 | changed 10-08 (`!recall` = one step back), not tested |
 | 4 | two members `!refine` at the same time | each gets their own picture changed | not tested (Ep, at home) |
 | 5 | `!draw realistic 一个女生` | realistic photo style | not tested |
-| 6 | `!dmdraw 一只猫` | your message disappears; channel shows only "画画中（私人请求）" + countdown/progress, no name; DM "收到…" then the picture by DM | not tested |
+| 6 | `!dmdraw 一只猫` | your message disappears; channel shows only "画画中（私人请求）" + countdown/progress, no name; DM "收到…" then the picture by DM | DM + unnamed notice passed 10-08; message NOT deleted (bot lacks Manage Messages in that channel; now it DMs CANT_HIDE) |
 | 7 | `/dmdraw request:一只猫` | only you see "开始画了，画好私信给你"; rest as #6 | not tested |
-| 8 | `!dmedit 第2张的角色穿第1张的衣服` with two pictures | message deleted; result by DM | not tested |
-| 9 | `!dmrefine 戴上帽子`, `!dmrecall`, `!dmrecall 1` | refines your last private picture; lists arrive by DM; public `!recall` doesn't show private pictures | not tested |
-| 10 | turn off DMs from server members, then `!dmdraw 一只猫` | channel reply "我私信不了你…", message stays, nothing drawn | not tested |
+| 8 | `!dmedit 第2张的角色穿第1张的衣服` with two pictures | message deleted; result by DM, looks like picture 2's character | 10-08: DM ok but drifted to a generic teal-haired girl (name dropped + faded); fixed: swaps keep the name and are never faded |
+| 9 | `!dmrefine 戴上帽子`, `!dmrecall`, `!dmrecall 1` | refines your last private picture; `!dmrecall` sends only the previous one by DM; public `!recall` doesn't show private pictures | refine/DM passed 10-08; `!dmrecall` now one step back |
+| 10 | turn off DMs from server members, then `!dmdraw 一只猫` | channel reply "我私信不了你…", message stays, nothing drawn | can't test on Ep's account: Ep shares another server with the bot where DMs are on, so the DM still arrives (expected Discord behaviour). Unit test covers it |
+| 13 | grant the bot **Manage Messages** in #gemma-4-img-sfw, then `!dmdraw 一只猫` | your message is deleted | not tested |
 | 11 | second picture after a restart | queue notice shows `⏱️ 预计 X 分 Y 秒` | passed 10-08 |
 | 12 | two-picture swap `!edit 第2张的角色穿第1张的衣服` | outfit/pose from 1, looks from 2 | passed 10-08 |
 

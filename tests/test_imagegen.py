@@ -406,12 +406,12 @@ async def test_recall_goes_back_and_branches_without_losing_pictures(mock_api, c
         mock_api.reply = prompt
         await bot.on_message(FakeMessage(text, ch))
         await finish(bot)
-    listed = FakeMessage("!recall", ch)
-    await bot.on_message(listed)
-    assert [f.filename for f in listed.files] == ["1.png", "2.png", "3.png"] and "3" in listed.replies[0]
+    step = FakeMessage("!recall", ch)  # no number: one step back, only that picture
+    await bot.on_message(step)
+    assert step.replies == [RECALLED.format(number=2, total=3)] and [f.filename for f in step.files] == ["2.png"]
     back = FakeMessage("!recall 2", ch)
     await bot.on_message(back)
-    assert back.replies == [RECALLED.format(number=2)] and back.files[0].fp.read() == PNG
+    assert back.replies == [RECALLED.format(number=2, total=3)] and back.files[0].fp.read() == PNG
     mock_api.reply = "girl, medium hair, red ribbon"
     await bot.on_message(FakeMessage("!refine add a ribbon", ch))
     await finish(bot)
@@ -547,7 +547,10 @@ async def test_recall_and_edit_work_with_full_width_bang_in_any_channel(mock_api
     assert edit.replies[1].filename == "image.png"
     back = FakeMessage("/recall 1", other)
     await bot.on_message(back)
-    assert back.replies == [RECALLED.format(number=1)]
+    assert back.replies == [RECALLED.format(number=1, total=1)]
+    oldest = FakeMessage("!recall", other)
+    await bot.on_message(oldest)
+    assert "最早" in oldest.replies[0] and not oldest.files
 
 
 async def test_bare_edit_explains_itself_instead_of_chatting(mock_api, comfy, events):
@@ -796,7 +799,7 @@ async def test_dmdraw_sends_the_picture_by_dm_and_names_no_one(mock_api, comfy, 
     public = FakeMessage("!recall", channel)
     await bot.on_message(public)
     assert public.replies == [NOTHING_TO_RECALL]  # private pictures stay out of the public list
-    await bot.on_message(private_message("！dmrecall", channel, dm))
+    await bot.on_message(private_message("！dmrecall 1", channel, dm))
     assert [f.filename for f in dm.sent[-1]] == ["1.png"]
     mock_api.reply = "ADD: hat SIZE: medium"
     await bot.on_message(private_message("!dmrefine 戴帽子", channel, dm))
@@ -841,3 +844,31 @@ async def test_dmedit_takes_both_pictures_and_slash_dmdraw_answers_only_the_memb
     assert interaction.response.sent[0][:2] == (DM_STARTED, True)  # only the member sees the answer
     assert channel2.sent[0].startswith(PRIVATE_NOTICE) and "<@5>" not in channel2.sent[0]
     assert dm2.sent[0] == DM_ACK and dm2.sent[1].filename == "image.png"
+
+
+async def test_dm_request_that_cant_be_deleted_says_so_by_dm(mock_api, comfy, events):
+    from bot import CANT_HIDE
+    bot = image_bot(mock_api.base_url, comfy.url)
+    channel, dm = PrivateChannel(BOT_CHANNEL), FakeDM()
+    channel.permissions_for = lambda member: SimpleNamespace(manage_messages=False)
+    mock_api.reply = "a cat"
+    msg = private_message("!dmdraw 一只猫", channel, dm)
+    await bot.on_message(msg)
+    await finish(bot)
+    assert not msg.deleted and CANT_HIDE in dm.sent and dm.sent[-1].filename == "image.png"
+
+
+async def test_swap_keeps_the_character_name_and_colors(mock_api, comfy, events):
+    import base64
+    bot = image_bot(mock_api.base_url, comfy.url)
+    base = _picture((240, 160, 180))
+    mock_api.reply = "1girl, ganyu (genshin impact), blue hair, maid outfit SIZE: big RECOLOR"
+    msg = FakeMessage("!edit 第2张的角色穿第1张的衣服", FakeChannel(BOT_CHANNEL),
+                      attachments=[FakeAttachment(base, "image/png"), FakeAttachment(_picture((90, 140, 230)), "image/png")])
+    await bot.on_message(msg)
+    await finish(bot)
+    assert "Keep picture 2's character name" in mock_api.requests[-1]["messages"][0]["content"][0]["text"]
+    job = comfy.jobs[0]
+    assert job["5"]["inputs"]["denoise"] == 0.75 and "ganyu (genshin impact)" in job["2"]["inputs"]["text"]
+    sent = base64.b64decode(job["8"]["inputs"]["image"])
+    assert _colorfulness(sent) == _colorfulness(base)  # not faded: a swap worked well without it

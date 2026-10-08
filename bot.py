@@ -35,6 +35,9 @@ DM_ACK = "Got it, your picture will arrive here. 收到，画好会发到这里�
 DM_STARTED = "Started; the picture will come by DM. 开始画了，画好私信给你。"
 DM_FAILED = ("I can't send you private messages. Allow DMs from server members, then try again. "
              "我私信不了你，请在隐私设置打开「允许服务器成员私信」再试。")
+CANT_HIDE = ("I can't delete your request in that channel (I need Manage Messages there), so others can see it; "
+             "/dmdraw and the other / forms stay hidden. 我在那个频道没有「管理消息」权限，删不掉你的指令，"
+             "别人看得到；请管理员给我这个权限，或改用 /dmdraw 等斜杠指令（只有你看得到）。")
 DM_USAGE = ("Write what to draw or change after the command, e.g. !dmdraw 一只猫. "
             "请在指令后写要画或要改的内容，例如 !dmdraw 一只猫。")
 FIRST_TIMING = "⏱️ First picture since I started, timing it; estimates start with the next one. 第一张图，计时中，下一张起会显示预计时间。"
@@ -49,11 +52,8 @@ EDIT_USAGE = ("Attach a picture and write the change, e.g. !edit 头发改成红
               "its character into the first. 请附上图片并写要改什么，例如 !edit 头发改成红色；"
               "再附第二张图，就把第二张的角色换进第一张。")
 NOTHING_TO_RECALL = "You have no pictures here yet. 你在这个频道还没有图。"
-RECALL_LIST = ("Your last pictures here, 1 = oldest. Send !recall <number> (or /recall) to go back to one; "
-               "your next /refine builds on it and the others stay. Now on: {base}. "
-               "你最近的图，1 是最早的。用 !recall 编号 回到那张，之后 /refine 从它改，其他的都保留。现在在第 {base} 张。")
-RECALLED = ("Back to picture {number}. Your next /refine builds on it; the others are kept. "
-            "已回到第 {number} 张，下次 /refine 从这张改，其他的都保留。")
+RECALLED = "↩️ Back to {number}/{total}. 回到第 {number} 张（共 {total} 张），下次 refine 从这张改。"
+AT_OLDEST = "This is your oldest picture ({total} kept). 已经是最早的一张了（共 {total} 张）。"
 ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done. "
                   "你已经有一张在排队了，画完才能再点。")
 STATUS_EVERY, STATUS_UPDATES = 2.5, 20  # /status refreshes about every 3 s for a minute
@@ -390,17 +390,19 @@ class ChatBot(discord.Client):
         return bool(self.images) and (command == "!recall" or (bool(rest) and command in ("!draw", "!refine", "!edit")))
 
     def recall(self, channel_id, user_id, number):
-        """Returns (text, PNG files) to post for /recall; no number lists the member's pictures."""
+        """Returns (text, PNG files) to post for /recall: the picture to go back to. No number means one
+        step back from the current one, the usual move after a refine that didn't work out."""
         pictures, base = self.images.history(channel_id, user_id)
         if not pictures:
             return NOTHING_TO_RECALL, []
         if number is None:
-            return RECALL_LIST.format(base=base + 1), [
-                discord.File(io.BytesIO(png), f"{i}.png") for i, png in enumerate(pictures, start=1)]
+            if base == 0:
+                return AT_OLDEST.format(total=len(pictures)), []
+            number = base  # the picture before the current one, counted from 1
         png = self.images.recall(channel_id, user_id, number)
         if png is None:
             return f"Pick 1 to {len(pictures)}. 请选 1 到 {len(pictures)}。", []
-        return RECALLED.format(number=number), [discord.File(io.BytesIO(png), f"{number}.png")]
+        return RECALLED.format(number=number, total=len(pictures)), [discord.File(io.BytesIO(png), f"{number}.png")]
 
     def queue_picture(self, request, channel_id, user_id, refine, send, edit, source=None, source_type=None,
                       reference=None, reference_type=None, private=False):
@@ -445,8 +447,12 @@ class ChatBot(discord.Client):
         except discord.HTTPException:
             await message.reply(DM_FAILED, mention_author=False)
             return
-        if message.guild is not None and message.channel.permissions_for(message.guild.me).manage_messages:
-            await message.delete()
+        if message.guild is not None:
+            if message.channel.permissions_for(message.guild.me).manage_messages:
+                await message.delete()
+            else:
+                log.warning("Can't delete a private request: no Manage Messages in channel %s", message.channel.id)
+                await dm.send(CANT_HIDE)
         if command == "!recall":
             text, files = self.recall(PRIVATE, message.author.id, int(rest) if rest.isdigit() else None)
             await dm.send(text, files=files)
@@ -861,8 +867,8 @@ class ChatBot(discord.Client):
                          character: discord.Attachment = None):
             await draw_command(interaction, changes, refine=False, image=image, character=character, private=True)
 
-        @self.tree.command(name="dmrecall", description="Your last private pictures by DM, or go back to one")
-        @app_commands.describe(number="Which picture (1 = oldest); leave empty to see them all")
+        @self.tree.command(name="dmrecall", description="Go back one private picture (or to a number), sent by DM")
+        @app_commands.describe(number="Which picture (1 = oldest); leave empty to go back one")
         async def dmrecall(interaction: discord.Interaction, number: int = None):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
@@ -875,8 +881,8 @@ class ChatBot(discord.Client):
                 return
             await interaction.response.send_message("Sent by DM. 已私信你。", ephemeral=True)
 
-        @self.tree.command(name="recall", description="Go back to one of your last pictures, so /refine builds on it")
-        @app_commands.describe(number="Which picture (1 = oldest); leave empty to see them all")
+        @self.tree.command(name="recall", description="Go back one picture (or to a number), so /refine builds on it")
+        @app_commands.describe(number="Which picture (1 = oldest); leave empty to go back one")
         async def recall(interaction: discord.Interaction, number: int = None):
             if not self.allowed(interaction.user):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
