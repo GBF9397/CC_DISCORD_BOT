@@ -361,7 +361,12 @@ def test_event_start_reads_dates_and_times():
     assert event_start("10-10", "8:05", now) == datetime(2026, 10, 10, 8, 5, tzinfo=timezone.utc)
     assert event_start("1/5", "20:00", now) == datetime(2027, 1, 5, 20, 0, tzinfo=timezone.utc)  # passed: next year
     assert event_start("next friday", "20:00", now) is None
-    assert event_start("10-10", "8pm", now) is None
+    for text in ("8:30pm", "8:30 PM", "晚上8:30", "下午8点半"[:-1] + "30", "20:30"):
+        assert event_start("10-10", text, now).hour == 20, text
+    assert event_start("10-10", "8pm", now).strftime("%H:%M") == "20:00"
+    assert event_start("10-10", "12am", now).hour == 0 and event_start("10-10", "12pm", now).hour == 12
+    assert event_start("10-10", "上午9点", now).strftime("%H:%M") == "09:00"
+    assert event_start("10-10", "8", now) is None and event_start("10-10", "13pm", now) is None
 
 
 class FakeGuild:

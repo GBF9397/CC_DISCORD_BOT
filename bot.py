@@ -47,14 +47,38 @@ def poll_answers(options):
     return answers or ["是 Yes", "不是 No"]
 
 
+def clock_time(text):
+    """Reads 20:30, 8pm, 8:30 PM, 晚上8:30 or 上午9点 as (hour, minute), or None."""
+    text = text.strip().lower().replace("：", ":").replace(" ", "").replace("点", ":").rstrip(":")
+    pm = text.endswith("pm") or text.startswith(("下午", "晚上", "傍晚"))
+    am = text.endswith("am") or text.startswith(("上午", "早上", "凌晨", "中午"))
+    match = re.fullmatch(r"(?:上午|早上|凌晨|中午|下午|晚上|傍晚)?(\d{1,2})(?::(\d{2}))?(?:am|pm)?", text)
+    if not match:
+        return None
+    hour, minute = int(match[1]), int(match[2] or 0)
+    if (am or pm) and not 1 <= hour <= 12:
+        return None
+    if pm and hour < 12:
+        hour += 12
+    elif am and hour == 12 and not text.startswith("中午"):
+        hour = 0
+    if not match[2] and not (am or pm):
+        return None  # a bare "8" could be morning or evening
+    return (hour, minute) if hour < 24 and minute < 60 else None
+
+
 def event_start(date, time, now=None):
-    """Parses date (2026-10-10, 2026/10/10, 10-10 or 10/10) and time (20:30) as the PC's local time.
-    Returns None if either can't be read. A date without a year that has passed means next year."""
+    """Parses date (2026-10-10, 2026/10/10, 10-10 or 10/10) and time (20:30, 8pm, 晚上8:30) as the PC's
+    local time. Returns None if either can't be read. A date without a year that has passed means next year."""
     now = now or datetime.now().astimezone()
-    date, time = date.strip(), time.strip().replace("：", ":")
+    clock = clock_time(time)
+    if clock is None:
+        return None
+    date = date.strip()
     for fmt, year in (("%Y-%m-%d", ""), ("%Y/%m/%d", ""), ("%Y-%m-%d", f"{now.year}-"), ("%Y/%m/%d", f"{now.year}/")):
         try:
-            start = datetime.strptime(f"{year}{date} {time}", fmt + " %H:%M").replace(tzinfo=now.tzinfo)
+            start = datetime.strptime(f"{year}{date}", fmt).replace(hour=clock[0], minute=clock[1],
+                                                                    tzinfo=now.tzinfo)
         except ValueError:
             continue
         if year and start < now:
@@ -318,7 +342,7 @@ class ChatBot(discord.Client):
 
         @self.tree.command(name="event", description="Create a server event with a date, time and place")
         @app_commands.describe(name="What the event is", date="Date, e.g. 2026-10-10 or 10-10",
-                               time="Start time, 24-hour, e.g. 20:30", place="Where it happens",
+                               time="Start time, e.g. 20:30, 8:30pm or 晚上8:30", place="Where it happens",
                                hours="How long it lasts (default 2 hours)", details="More about it (optional)")
         async def event(interaction: discord.Interaction, name: str, date: str, time: str, place: str,
                         hours: app_commands.Range[float, 0.25, 72.0] = 2.0, details: str = ""):
