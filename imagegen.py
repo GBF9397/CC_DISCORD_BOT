@@ -147,8 +147,9 @@ EDIT_NODE = "BotLoadImageBase64"  # in comfy_node.py, copied into ComfyUI's cust
 
 EDIT_WORDS = re.compile(r"\b(ADD|REMOVE|AVOID|SIZE):\s*(.*?)(?=\s*\b(?:ADD|REMOVE|AVOID|SIZE):|$)")
 WEIGHTED = re.compile(r"^\((.*?)(?::[\d.]+)?\)$")
-# How much of the last picture a /refine redraws (1.0 = draw again with the same seed).
-REFINE_STRENGTH = {"small": 0.45, "medium": 0.6, "big": 0.75, "new": 1.0}
+# How much of the last picture a /refine redraws (1.0 = draw again with the same seed). Every asked-for
+# change redraws over half, or the old picture wins and nothing seems to change.
+REFINE_STRENGTH = {"small": 0.55, "medium": 0.6, "big": 0.75, "new": 1.0}
 MAX_AVOID = 12  # negative tags carried from round to round
 TIMINGS_KEPT = 5  # recent seconds per step, for the time estimate; RAM only
 

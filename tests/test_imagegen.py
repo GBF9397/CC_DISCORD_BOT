@@ -449,7 +449,7 @@ async def test_refine_only_touches_what_the_member_asked_for(mock_api, comfy, ev
     # The hair change from last round stays, without its extra weight; short hair stays avoided.
     assert job["2"]["inputs"]["text"] == "1girl, (natural skin:1.3), medium hair, green hair, smile, black sweater"
     assert "short hair, bob cut, lowres" in job["3"]["inputs"]["text"] and "pale skin" in job["3"]["inputs"]["text"]
-    assert job["5"]["inputs"]["denoise"] == 0.45
+    assert job["5"]["inputs"]["denoise"] == 0.55  # even a small change redraws over half
     mock_api.reply = "ADD: running REMOVE: smile SIZE: new"
     await bot.on_message(FakeMessage("!refine make her run", ch))
     await finish(bot)
