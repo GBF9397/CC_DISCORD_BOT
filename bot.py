@@ -37,8 +37,10 @@ ALREADY_QUEUED = ("You already have a picture waiting. Ask again once it's done.
                   "你已经有一张在排队了，画完才能再点。")
 STATUS_EVERY, STATUS_UPDATES = 2.5, 20  # /status refreshes about every 3 s for a minute
 EXAMPLES_KEPT, EXAMPLE_CHARS = 2, 80  # per emoji/sticker, RAM only
-# "/comment ..." is a plain message, not a registered slash command, so it still posts.
+# "/comment ..." typed as plain text: reposted under the member's name without the prefix.
 COMMENT = re.compile(r"\s*(<@!?\d+>\s*)?[/／!！]comment\b", re.IGNORECASE)
+NO_COMMENT_PERMISSION = ("I need the Manage Webhooks permission in this channel to post that. "
+                         "我在这个频道没有「管理 Webhooks」权限，请管理员给我加上。")
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
@@ -116,6 +118,7 @@ class ChatBot(discord.Client):
         super().__init__(intents=intents)
         self.config = config
         self.memory = ChannelMemory()
+        self._hooks = {}  # channel id -> webhook used to repost /comment messages
         self.brain = Brain(config["base_url"], config["model"], self.memory,
                            unfiltered=config.get("unfiltered", False))
         self.tree = app_commands.CommandTree(self)
@@ -266,7 +269,43 @@ class ChatBot(discord.Client):
         return (f"📅 {user_name} created an event 建了一个活动: **{created.name}**\n"
                 f"🕒 <t:{int(start.timestamp())}:F>\n📍 {created.location}\n{created.url}")
 
+    async def post_as(self, channel, member, text, files=()):
+        """Posts under the member's name and avatar through the channel's webhook; False if not allowed."""
+        thread = channel if isinstance(channel, discord.Thread) else discord.utils.MISSING
+        parent = channel.parent if isinstance(channel, discord.Thread) else channel
+        if not parent.permissions_for(parent.guild.me).manage_webhooks:
+            return False
+        hook = self._hooks.get(parent.id)
+        if hook is None:
+            hook = next((h for h in await parent.webhooks() if h.user and h.user.id == self.user.id), None) \
+                or await parent.create_webhook(name="Gemma comment")
+            self._hooks[parent.id] = hook
+        await hook.send(text or discord.utils.MISSING, username=member.display_name,
+                        avatar_url=member.display_avatar.url, files=list(files), thread=thread,
+                        allowed_mentions=discord.AllowedMentions.none())  # the original already pinged
+        return True
+
+    async def hide_comment(self, message, text):
+        """Swaps a '/comment ...' message for the same words under the member's name, so it reads like chat.
+        Left as it is when the bot can't delete messages or use webhooks here."""
+        if not message.channel.permissions_for(message.guild.me).manage_messages:
+            return
+        files = [await a.to_file() for a in message.attachments]  # RAM only
+        if (text or files) and await self.post_as(message.channel, message.author, text, files):
+            await message.delete()
+
     def _add_slash_commands(self):
+        @self.tree.command(name="comment", description="Talk to members only: the bot won't reply or remember it")
+        async def comment(interaction: discord.Interaction, text: str):
+            if not self.allowed(interaction.user):
+                await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if interaction.guild is None or not await self.post_as(interaction.channel, interaction.user, text):
+                await interaction.followup.send(NO_COMMENT_PERMISSION, ephemeral=True)
+                return
+            await interaction.delete_original_response()
+
         @self.tree.command(name="ask", description="Ask the bot something")
         async def ask(interaction: discord.Interaction, question: str):
             if self.drawing():
@@ -319,9 +358,10 @@ class ChatBot(discord.Client):
                 name = character.strip()[:100]
                 await interaction.response.defer(thinking=True)
                 log.info("Looking up character persona for channel %s", interaction.channel_id)
-                # Two lookups: who they are, and who they know (Gemma forgets teammates otherwise).
+                # Who they are, who they know (Gemma forgets teammates otherwise) and how they fight.
                 results = "\n\n".join([await web_search(f"{name} character personality speech style quotes"),
-                                        await web_search(f"{name} teammates friends relationships story")])
+                                        await web_search(f"{name} teammates friends relationships story"),
+                                        await web_search(f"{name} abilities techniques explained")])
                 text = await self.brain.character_persona(name, results)
                 if text is None:
                     await interaction.followup.send(
@@ -483,10 +523,15 @@ class ChatBot(discord.Client):
     async def on_message(self, message):
         log.info("Message in channel %s from user %s (%d chars, %d attachments)",
                  message.channel.id, message.author.id, len(message.content), len(message.attachments))
-        if message.author.bot or (self.drawing() and not self.is_draw_request(message.content)):
+        if message.author.bot:
             return
-        if COMMENT.match(message.content):
-            return  # members talking among themselves: no reply, nothing remembered
+        if comment := COMMENT.match(message.content):
+            # Members talking among themselves: no reply, nothing remembered.
+            if message.guild is not None and self.allowed(message.author):
+                await self.hide_comment(message, message.content[comment.end():].strip())
+            return
+        if self.drawing() and not self.is_draw_request(message.content):
+            return
         self.note_usage(message)
         if not self.allowed(message.author):
             return

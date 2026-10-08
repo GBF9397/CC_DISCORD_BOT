@@ -61,7 +61,7 @@ PERSONAS = {
 }
 DEFAULT_PERSONA = "buddy"
 CUSTOM_MAX_CHARS = 300
-CHARACTER_MAX_CHARS = 1500
+CHARACTER_MAX_CHARS = 2000
 
 # Gemma leaned on the same few catchphrases, mocked pictures of the character itself,
 # and claimed someone else in a manga panel was itself, so a character persona carries these reminders.
@@ -72,7 +72,12 @@ CHARACTER_STYLE = (
     "words like mousou, write 妄想; in Chinese, use the official Chinese names of people, "
     "pets and places. Don't guess who the people in a picture are: say one "
     "is {name} only when it clearly is (face, marks, outfit), and when you can't tell, "
-    "react to what is happening in it without naming anyone. Never mock {name}."
+    "react to what is happening in it without naming anyone. Never mock {name}. "
+    "With a picture, first look at what it actually shows (close-up or wide shot, faces, "
+    "expressions, poses, any text written on it) and react to those details, never with a "
+    "stock line. If {name} explains how their abilities or techniques work in the story, "
+    "do that too when the talk turns to fighting or power: lay out the rules and logic "
+    "calmly and in detail, the way they explain it to an opponent."
 )
 # A character persona's own quiet lookups, separate from /search.
 LORE_EVERY = 8  # refresh who the character is every this many chat messages
@@ -87,9 +92,9 @@ LORE_NOTE = (
 CHARACTER_PROMPT = (
     "Write a roleplay brief so an actor can play {name}. Use the web results below and "
     "prefer them over what you remember, since you often mix characters up. Cover in under "
-    "250 words: who they are and where they come from (game, anime, book...), personality, "
+    "300 words: who they are and where they come from (game, anime, book...), personality, "
     "how they talk (tone, how they address people), their teammates, friends, rivals and "
-    "family by name with one line each, and a few key facts. Write catchphrases and "
+    "family by name with one line each, their abilities or techniques (what each does and how they explain it, if they do), and a few key facts. Write catchphrases and "
     "foreign words in Chinese (e.g. 妄想, not mousou), and give every name (people, pets, "
     "places, items) as the official Chinese version calls it, with the English name in "
     "brackets (e.g. 泡泡 (Bubblegum)). Write it as notes, no intro. If you don't recognise the character, reply only with UNKNOWN.\n\n"

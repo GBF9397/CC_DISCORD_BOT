@@ -127,7 +127,7 @@ async def test_long_reply_is_split(mock_api, monkeypatch):
 async def test_slash_commands_registered_and_work(mock_api):
     bot = make_bot(mock_api.base_url)
     names = {c.name for c in bot.tree.get_commands()}
-    assert names == {"ask", "reset", "search", "persona", "poll", "event", "status"}
+    assert names == {"ask", "reset", "search", "persona", "poll", "event", "status", "comment"}
 
     sent = []
     async def followup_send(text):
@@ -317,6 +317,41 @@ async def test_comment_messages_get_no_reply_and_are_not_remembered(mock_api):
     msg = FakeMessage("/commentary please", ch)
     await bot.on_message(msg)
     assert msg.replies  # only the /comment word itself is skipped
+
+
+class FakeHook:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, text, **kwargs):
+        self.sent.append((text, kwargs["username"]))
+
+
+async def test_comment_is_reposted_without_the_command(mock_api):
+    bot = make_bot(mock_api.base_url)
+    hook = FakeHook()
+    allowed = SimpleNamespace(manage_webhooks=True, manage_messages=True)
+    ch = FakeChannel(BOT_CHANNEL)
+    ch.guild = SimpleNamespace(me=None)
+    ch.permissions_for = lambda member: allowed
+    ch.webhooks = lambda: _return([])
+    ch.create_webhook = lambda name: _return(hook)
+    msg = FakeMessage("！comment 你们晚上打不打", ch, guild=ch.guild)
+    msg.author.display_avatar = SimpleNamespace(url="https://cdn/a.png")
+    deleted = []
+    msg.delete = lambda: _return(deleted.append(True))
+    await bot.on_message(msg)
+    assert hook.sent == [("你们晚上打不打", "user1")] and deleted and msg.replies == []
+    assert mock_api.requests == [] and bot.memory.get(BOT_CHANNEL) == []
+
+    allowed.manage_messages = False  # can't delete it: the message stays as typed
+    deleted.clear()
+    await bot.on_message(msg)
+    assert len(hook.sent) == 1 and not deleted
+
+
+async def _return(value):
+    return value
 
 
 async def test_character_persona_searches_for_fact_questions(mock_api, monkeypatch):
