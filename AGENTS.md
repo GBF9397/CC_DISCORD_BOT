@@ -103,6 +103,7 @@ After a test, before any restart: `Select-String -Path bot-error.log -Pattern "E
 | 10 | turn off DMs from server members, then `!dmdraw 一只猫` | channel reply "我私信不了你…", message stays, nothing drawn | passed 10-08 after turning DMs off in both servers Ep shares with the bot (with one still on, the DM still arrives; that's Discord, not a bug) |
 | 13 | grant the bot **Manage Messages** in #gemma-4-img-sfw, then `!dmdraw 一只猫` | your message is deleted | passed 10-08 (Ep granted it) |
 | 14 | ControlNet installed + `SD_CONTROLNET=controlnet-canny-sdxl.safetensors` in `.env`, then `/edit 把头发改成红色` with official Ganyu art | red hair; same pose, horns and face; log `Recolor: following the outlines with ControlNet, redrawing 90%` | passed 10-08 21:05: fully red hair, horns, pose and framing kept; eyes turned orange-red, a bit more gold on the outfit. Ep: 能接受，不错 |
+| 15 | after a draw, refine again right away (ControlNet red-hair picture -> `/refine ...` twice) | each refine draws; if one says "brain (LM Studio) is offline", read `Select-String -Path bot-error.log -Pattern "lms|reload|LM Studio|ERROR|WARNING" \| Select-Object -Last 10` before restarting | 10-08 21:18 a second refine got "offline" ~1 min after starting (not the 5-min timeout); cause unknown, `core.image_prompt` now logs unreachable / refused (status) / empty reply |
 | 11 | second picture after a restart | queue notice shows `⏱️ 预计 X 分 Y 秒` | passed 10-08 |
 | 12 | two-picture swap `!edit 第2张的角色穿第1张的衣服` | outfit/pose from 1, looks from 2 | passed 10-08 |
 

@@ -325,9 +325,16 @@ class Brain:
             )
         except APITimeoutError:
             raise TooSlow from None
-        except (APIConnectionError, APIStatusError):
+        except APIConnectionError:
+            log.warning("LM Studio unreachable for a picture prompt")
             return None
-        return " ".join((resp.choices[0].message.content or "").split()) or None
+        except APIStatusError as e:
+            log.warning("LM Studio refused a picture prompt: %s %s", e.status_code, str(e.message)[:150])
+            return None
+        prompt = " ".join((resp.choices[0].message.content or "").split())
+        if not prompt:
+            log.warning("LM Studio gave an empty picture prompt (finish reason %s)", resp.choices[0].finish_reason)
+        return prompt or None
 
     async def ask(self, channel_id, user_name, text, images=(), search_results="", extras="", limited=True,
                   lore=""):

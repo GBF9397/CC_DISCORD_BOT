@@ -913,3 +913,11 @@ def test_sd_controlnet_is_read_from_env(monkeypatch):
     import core
     monkeypatch.setenv("SD_CONTROLNET", " controlnet-canny-sdxl.safetensors ")
     assert core.load_config()["sd_controlnet"] == "controlnet-canny-sdxl.safetensors"
+
+
+async def test_why_gemma_gave_no_picture_prompt_is_logged(mock_api, comfy, events, caplog):
+    maker = ImageMaker(make_bot(mock_api.base_url).brain, comfy.url, {"anime": "model.safetensors"})
+    mock_api.reply = ""
+    png, error = await draw(maker, "一只猫")
+    assert png is None and "offline" in error
+    assert "empty picture prompt" in caplog.text and "一只猫" not in caplog.text  # why, but never what was asked
