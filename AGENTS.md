@@ -66,6 +66,7 @@ Every member-facing release gets a short Chinese announcement as a raw markdown 
 - `Start-Process ... -RedirectStandardError bot-error.log` overwrites the log: read it before restarting. Read with `Select-String -Path bot-error.log -Pattern "Edit:|Refine:|Recolor" | Select-Object -Last 5`.
 - Branches drift behind main fast (other sessions push too); merge main in before telling Ep a branch is ready.
 - Discord limits: select menus hold 25 options; answer a button click within 3 s (defer first); a typed message can't open a form (needs a button); a public @mention is always visible; ephemeral messages exist only for slash commands.
+- `Get-Process python` shows **4 processes for one running bot**: the bot and the monitor window (`monitor.py` runs as its own process), each as a small venv launcher plus the real python. ComfyUI adds more once it starts. Two bots would show 8.
 - In `imagegen.py` the module `core` is imported as `brain_core`, because `imagegen.core()` is a tag helper.
 - `!comment` is matched by the `COMMENT` regex before `text_command()` (which can't handle a leading @mention or a newline); keep both cases working if you touch it.
 
