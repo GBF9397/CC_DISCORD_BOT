@@ -39,7 +39,7 @@ class FakeMessage:
         self.mentions = list(mentions)
         self.replies = []
 
-    async def reply(self, text=None, mention_author=True, file=None, files=None):
+    async def reply(self, text=None, mention_author=True, file=None, files=None, view=None):
         self.replies.append(text if file is None else file)
         self.files = files
         self.mentioned = mention_author
@@ -325,7 +325,7 @@ class FakeResponse:
     def __init__(self):
         self.sent = []
 
-    async def send_message(self, content=None, ephemeral=False, poll=None):
+    async def send_message(self, content=None, ephemeral=False, poll=None, view=None):
         self.sent.append((content, ephemeral, poll))
 
 
@@ -335,7 +335,7 @@ def slash_interaction(guild=None):
     async def defer(thinking=False):
         pass
 
-    async def followup(content=None):
+    async def followup(content=None, view=None):
         response.sent.append((content, False, None))
     response.defer = defer
     return SimpleNamespace(user=SimpleNamespace(id=5, display_name="member"), channel_id=CHANNEL,
@@ -388,7 +388,7 @@ class FakeGuild:
         if self.forbidden:
             raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "Missing Permissions")
         self.created = kwargs
-        return SimpleNamespace(name=kwargs["name"], location=kwargs["location"], url="https://discord.com/events/1/2")
+        return SimpleNamespace(id=7, name=kwargs["name"], location=kwargs["location"], url="https://discord.com/events/1/2")
 
 
 async def test_event_command_creates_an_external_event(mock_api):
@@ -505,7 +505,7 @@ async def test_bang_poll_posts_a_poll_from_one_line(mock_api):
     sent = []
     ch = FakeChannel(CHANNEL)
 
-    async def send(content=None, poll=None):
+    async def send(content=None, poll=None, view=None):
         sent.append((content, poll))
     ch.send = send
     await bot.on_message(FakeMessage("!poll 今晚吃什么 | 炒饭，煎蛋 | <@11>", ch))
@@ -515,3 +515,31 @@ async def test_bang_poll_posts_a_poll_from_one_line(mock_api):
     msg = FakeMessage("!poll", FakeChannel(CHANNEL))
     await bot.on_message(msg)
     assert msg.replies[0].startswith("Write it as")
+
+
+async def test_only_the_creator_can_end_a_poll_and_gets_the_counts():
+    from bot import EndPollButton
+    ended, sent = [], []
+    answers = [SimpleNamespace(text="炒饭", vote_count=2), SimpleNamespace(text="煎蛋", vote_count=1)]
+    poll = SimpleNamespace(question="今晚吃什么", answers=answers, total_votes=3, is_finalised=lambda: False)
+
+    async def end_poll():
+        ended.append(True)
+    response = FakeResponse()
+
+    async def edit_message(view=None):
+        pass
+    response.edit_message = edit_message
+
+    async def followup(text):
+        sent.append(text)
+    def click(user_id):
+        return SimpleNamespace(user=SimpleNamespace(id=user_id, display_name="Ep"), response=response,
+                               message=SimpleNamespace(poll=poll, end_poll=end_poll),
+                               followup=SimpleNamespace(send=followup))
+
+    button = EndPollButton(5)
+    await button.callback(click(6))
+    assert not ended and response.sent[0][0].startswith("Only the person")
+    await button.callback(click(5))
+    assert ended and "炒饭: 2" in sent[0] and "煎蛋: 1" in sent[0]
