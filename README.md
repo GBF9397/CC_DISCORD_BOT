@@ -85,9 +85,9 @@ Fields are split with `|`, e.g. `!poll Dinner tonight? | fried rice, noodles`.
 
 | Type | Example |
 |---|---|
-| Preset | `!persona wuxia` (buddy, tsundere, wuxia, pirate, roast) |
+| Preset | `!persona pirate` (buddy, tsundere, wuxia, pirate, roast) |
 | Custom | `!persona custom a grumpy cat who loves fish` |
-| Character | `!persona character Furina Genshin Impact` |
+| Character | `!persona character Sherlock Holmes` |
 
 - Characters are looked up on the web: personality, teammates, rivals, abilities
 - They look facts up again when asked, and refresh who they are every 8 messages
