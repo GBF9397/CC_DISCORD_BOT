@@ -518,7 +518,7 @@ async def test_poll_with_members_names_them_and_ends_once_they_all_voted(mock_ap
     assert content == POLL_VOTERS + "<@11> <@12>" and vote.duration == timedelta(hours=168)
 
     interaction = slash_interaction()
-    await bot.tree.get_command("poll").callback(interaction, "q", "", "Daddy宏", 768, False)
+    await bot.tree.get_command("poll").callback(interaction, "q", "", "小明", 768, False)
     assert interaction.response.sent[0][1] is True  # names without @ are refused, privately
 
     votes = {"是 Yes": [11], "不是 No": [99]}
@@ -628,7 +628,7 @@ async def test_only_the_creator_can_end_a_poll_and_gets_the_counts():
     async def followup(text):
         sent.append(text)
     def click(user_id):
-        return SimpleNamespace(user=SimpleNamespace(id=user_id, display_name="Ep"), response=response,
+        return SimpleNamespace(user=SimpleNamespace(id=user_id, display_name="Alex"), response=response,
                                message=SimpleNamespace(poll=poll, end_poll=end_poll),
                                followup=SimpleNamespace(send=followup))
 
@@ -660,7 +660,7 @@ async def test_end_event_answers_the_click_before_cancelling():
 
     async def followup(text, ephemeral=False):
         steps.append(text)
-    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Ep"),
+    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Alex"),
                                   guild=SimpleNamespace(fetch_scheduled_event=fetch),
                                   response=SimpleNamespace(defer=defer),
                                   edit_original_response=edit_original_response,
@@ -682,7 +682,7 @@ async def test_end_event_says_when_discord_refuses():
 
     async def followup(text, ephemeral=False):
         sent.append((text, ephemeral))
-    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Ep"),
+    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Alex"),
                                   guild=SimpleNamespace(fetch_scheduled_event=fetch),
                                   response=SimpleNamespace(defer=defer), followup=SimpleNamespace(send=followup))
     await EndEventButton(5, 9).callback(interaction)
@@ -709,7 +709,7 @@ async def test_end_event_twice_just_removes_the_button():
 
     async def followup(text, ephemeral=False):
         steps.append(text)
-    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Ep"),
+    interaction = SimpleNamespace(user=SimpleNamespace(id=5, display_name="Alex"),
                                   guild=SimpleNamespace(fetch_scheduled_event=fetch),
                                   response=SimpleNamespace(defer=defer),
                                   edit_original_response=edit_original_response,
@@ -777,7 +777,7 @@ async def test_event_picker_creates_the_event_from_the_menus(mock_api):
 
     async def followup(text, view=None, ephemeral=False):
         sent.append((text, view, ephemeral))
-    interaction = SimpleNamespace(client=bot, guild=guild, user=SimpleNamespace(id=5, display_name="Ep"),
+    interaction = SimpleNamespace(client=bot, guild=guild, user=SimpleNamespace(id=5, display_name="Alex"),
                                   response=SimpleNamespace(defer=defer),
                                   edit_original_response=edit_original_response,
                                   followup=SimpleNamespace(send=followup))

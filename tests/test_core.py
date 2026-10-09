@@ -9,8 +9,8 @@ def make_brain(url):
 
 async def test_reply_uses_content_not_reasoning(mock_api):
     brain = make_brain(mock_api.base_url)
-    reply = await brain.ask(1, "Ep", "hello")
-    assert reply == "echo: Ep: hello"
+    reply = await brain.ask(1, "Alex", "hello")
+    assert reply == "echo: Alex: hello"
     assert "SECRET" not in reply
     sent = mock_api.requests[0]
     assert sent["model"] == "gemma4-12b-bionic-v2"
@@ -21,14 +21,14 @@ async def test_reply_uses_content_not_reasoning(mock_api):
 
 async def test_memory_is_per_channel_and_resettable(mock_api):
     brain = make_brain(mock_api.base_url)
-    await brain.ask(1, "Ep", "first")
+    await brain.ask(1, "Alex", "first")
     await brain.ask(2, "Bo", "other channel")
-    await brain.ask(1, "Ep", "second")
+    await brain.ask(1, "Alex", "second")
     history = mock_api.requests[-1]["messages"]
     contents = [m["content"] for m in history]
-    assert "Ep: first" in contents and "Bo: other channel" not in contents
+    assert "Alex: first" in contents and "Bo: other channel" not in contents
     brain.memory.reset(1)
-    await brain.ask(1, "Ep", "after reset")
+    await brain.ask(1, "Alex", "after reset")
     assert len(mock_api.requests[-1]["messages"]) == 2  # system + new message
 
 
@@ -60,7 +60,7 @@ async def test_requests_run_one_at_a_time(mock_api):
 async def test_offline_gives_friendly_error_and_keeps_no_memory():
     brain = make_brain("http://127.0.0.1:9/v1")  # nothing listens here
     brain.client = brain.client.with_options(max_retries=0)
-    assert await brain.ask(1, "Ep", "hi") == OFFLINE_MESSAGE
+    assert await brain.ask(1, "Alex", "hi") == OFFLINE_MESSAGE
     assert brain.memory.get(1) == []
 
 
@@ -84,12 +84,12 @@ def test_bot_channel_id_accepts_several_ids(monkeypatch):
 
 async def test_persona_is_per_channel_and_switch_clears_memory(mock_api):
     brain = make_brain(mock_api.base_url)
-    await brain.ask(1, "Ep", "hi")
+    await brain.ask(1, "Alex", "hi")
     assert PERSONAS[DEFAULT_PERSONA] in mock_api.requests[0]["messages"][0]["content"]
     assert "name" in mock_api.requests[0]["messages"][0]["content"]
     brain.set_persona(1, PERSONAS["pirate"])
     assert brain.memory.get(1) == []
-    await brain.ask(1, "Ep", "ahoy")
+    await brain.ask(1, "Alex", "ahoy")
     await brain.ask(2, "Bo", "hello")
     assert PERSONAS["pirate"] in mock_api.requests[1]["messages"][0]["content"]
     assert PERSONAS[DEFAULT_PERSONA] in mock_api.requests[2]["messages"][0]["content"]
@@ -132,10 +132,10 @@ async def test_unfiltered_mode_is_off_by_default_and_loosens_prompt_when_on(mock
     assert load_config()["stickers"] is False
     monkeypatch.setenv("UNFILTERED_MODE", "on")
     assert load_config()["unfiltered"] is True
-    await make_brain(mock_api.base_url).ask(1, "Ep", "hi")
+    await make_brain(mock_api.base_url).ask(1, "Alex", "hi")
     assert UNFILTERED_NOTE not in mock_api.requests[-1]["messages"][0]["content"]
     brain = Brain(mock_api.base_url, "gemma4-12b-bionic-v2", ChannelMemory(), unfiltered=True)
-    await brain.ask(1, "Ep", "hi")
+    await brain.ask(1, "Alex", "hi")
     system = mock_api.requests[-1]["messages"][0]["content"]
     assert UNFILTERED_NOTE in system and "minors" in system
 
@@ -145,12 +145,12 @@ async def test_each_reply_draws_a_length_cap_and_long_replies_are_cut(mock_api, 
     monkeypatch.setattr(core.random, "choice", lambda options: 10)
     mock_api.reply = "哈哈哈哈哈哈。今天天气真好呀！你呢？"
     brain = make_brain(mock_api.base_url)
-    reply = await brain.ask(1, "Ep", "hi")
+    reply = await brain.ask(1, "Alex", "hi")
     assert reply == "哈哈哈哈哈哈。今天天气真好呀！"  # cut at a sentence end within 1.5x the cap
     sent = mock_api.requests[0]["messages"]
     assert "Length limit" not in sent[0]["content"]  # with the newest message, not the system prompt
-    assert sent[-1]["content"].startswith("Ep: hi\n\n[Length limit for this reply: at most 10 Chinese")
-    assert brain.memory.get(1) == [{"role": "user", "content": "Ep: hi"},
+    assert sent[-1]["content"].startswith("Alex: hi\n\n[Length limit for this reply: at most 10 Chinese")
+    assert brain.memory.get(1) == [{"role": "user", "content": "Alex: hi"},
                                    {"role": "assistant", "content": "哈哈哈哈哈哈。今天天气真好呀！"}]
     assert "max_tokens" not in mock_api.requests[-1]  # reasoning needs the room
 
@@ -183,9 +183,9 @@ async def test_character_persona_looks_things_up_quietly(mock_api):
     assert brain.lore_query(1, "who are you?") is None
 
     mock_api.reply = "I am Furina!"
-    await brain.ask(1, "Ep", "who are you?", lore="Opera Epiclese")
+    await brain.ask(1, "Alex", "who are you?", lore="Opera Epiclese")
     sent = mock_api.requests[-1]["messages"][-1]["content"]
-    assert "Opera Epiclese" in sent and "looked up quietly" in sent and sent.count("Ep: who are you?") == 1
+    assert "Opera Epiclese" in sent and "looked up quietly" in sent and sent.count("Alex: who are you?") == 1
     assert "Opera Epiclese" not in str(brain.memory.get(1))
 
 
@@ -200,7 +200,7 @@ async def test_reply_over_the_cap_is_rewritten_within_it(mock_api, monkeypatch):
     monkeypatch.setattr(core.random, "choice", lambda options: 10)
     mock_api.reply = ["一二三四五六七八九十" * 3, "好的，懂了。"]
     brain = make_brain(mock_api.base_url)
-    app_reply = await brain.ask(1, "Ep", "hi")
+    app_reply = await brain.ask(1, "Alex", "hi")
     assert app_reply == "好的，懂了。" and len(mock_api.requests) == 2
     assert "at most 10 Chinese characters" in mock_api.requests[1]["messages"][-1]["content"]
     assert brain.memory.get(1)[-1]["content"] == "好的，懂了。"

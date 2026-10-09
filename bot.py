@@ -74,7 +74,7 @@ POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
 POLL_USAGE = ("Write it as: !poll question | answers | @members (answers and members optional), e.g. "
-              "!poll 今晚吃什么 | 炒饭，煎蛋 | @Daddy宏\n格式：!poll 问题 | 选项 | @成员（选项和成员可不写）")
+              "!poll 今晚吃什么 | 炒饭，煎蛋 | @小明\n格式：!poll 问题 | 选项 | @成员（选项和成员可不写）")
 EVENT_USAGE = ("Write it as: !event name | date | time | place (| hours | details), any order as long as "
                "the name comes before the place, e.g. !event 电影夜 | 10-10 | 8:30pm | 语音频道\n"
                "格式：!event 名称 | 日期 | 时间 | 地点（| 小时 | 说明），顺序随意，名称写在地点前面就行")
@@ -604,7 +604,7 @@ class ChatBot(discord.Client):
             return "A poll can have at most 10 answers. 投票最多 10 个选项。", None, None
         voters = list(dict.fromkeys(MEMBER_MENTION.findall(members)))
         if members.strip() and not voters:
-            return "Pick members with @, e.g. @Daddy宏 @启胜. 请用 @ 选成员。", None, None
+            return "Pick members with @, e.g. @小明 @小红. 请用 @ 选成员。", None, None
         hours = hours or (168 if voters else 24)
         vote = discord.Poll(question=question[:300], duration=timedelta(hours=hours), multiple=multiple)
         for answer in answers:
@@ -746,7 +746,7 @@ class ChatBot(discord.Client):
         @self.tree.command(name="poll", description="Start a poll members vote on")
         @app_commands.describe(question="What to vote on",
                                options="Answers split by | , or /, e.g. '是 | 不是'; leave empty for yes/no",
-                               members="Who votes, e.g. '@Daddy宏 @启胜': the poll ends once they all have",
+                               members="Who votes, e.g. '@小明 @小红': the poll ends once they all have",
                                hours="How long it stays open (1-768 hours; default 24, or 168 = 7 days when members are named)",
                                multiple="Let members pick more than one answer")
         async def poll(interaction: discord.Interaction, question: str, options: str = "", members: str = "",
