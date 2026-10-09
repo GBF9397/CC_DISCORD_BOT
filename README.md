@@ -16,7 +16,7 @@ Every command works in **any channel**, in two forms:
 - a slash command: `/draw a cat`
 - one line of text: `!draw a cat` (also `！draw` or a pasted `/draw` line)
 
-Fields are split with `|`, e.g. `!poll 今晚吃什么 | 炒饭，煎蛋`.
+Fields are split with `|`, e.g. `!poll Dinner tonight? | fried rice, noodles`.
 
 <br>
 
@@ -76,7 +76,7 @@ Fields are split with `|`, e.g. `!poll 今晚吃什么 | 炒饭，煎蛋`.
 
 ### Web search
 
-- Runs by itself for time-sensitive questions (today, latest, price, weather, 今天, 最新 ...)
+- Runs by itself for time-sensitive questions (today, latest, price, weather ...), in English or Chinese
 - Results are used for one answer, never saved
 
 <br>
@@ -86,8 +86,8 @@ Fields are split with `|`, e.g. `!poll 今晚吃什么 | 炒饭，煎蛋`.
 | Type | Example |
 |---|---|
 | Preset | `!persona wuxia` (buddy, tsundere, wuxia, pirate, roast) |
-| Custom | `!persona custom 一只爱吃鱼的猫` |
-| Character | `!persona character 芙宁娜 原神` |
+| Custom | `!persona custom a grumpy cat who loves fish` |
+| Character | `!persona character Furina Genshin Impact` |
 
 - Characters are looked up on the web: personality, teammates, rivals, abilities
 - They look facts up again when asked, and refresh who they are every 8 messages

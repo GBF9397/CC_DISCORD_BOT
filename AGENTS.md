@@ -51,7 +51,7 @@ Keep these files current as you learn and build more: they are how sessions reus
 - Merge main into a branch before telling Ep it is ready.
 - Don't subscribe to PR activity while waiting on Ep. Don't wake idle work. Big changes at medium effort, small at low effort.
 - Check evidence before reporting the bot's status (online, stuck, running old code).
-- **Writing docs (README, `docs/`)**: Ep wants short, visual pages: three heading levels, tables and point form, blank lines between blocks. Only code goes in code format (commands, examples, file names, `.env` keys and values, model ids, log lines); explanations and wording stay plain text.
+- **Writing docs (README, `docs/`)**: Ep wants short, visual pages: three heading levels, tables and point form, blank lines between blocks. Only code goes in code format (commands, examples, file names, `.env` keys and values, model ids, log lines); explanations and wording stay plain text. README is English only (no bilingual text; readers can translate in the browser); `docs/` files are Chinese.
 - **Trigger phrase**: when Ep says 「这个也是踩坑」, record that item (problem -> cause -> fix) in `docs/问题踩坑复利.md` and push.
 - Announcement format and rules: see `docs/版本更新内容（已归档和刚完成）.md`.
 
