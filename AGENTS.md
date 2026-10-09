@@ -46,7 +46,7 @@ Keep these files current as you learn and build more: they are how sessions reus
 
 ## Working rules
 - **After every change, give Ep (in Chinese) the commit id to expect, the PC commands to pull and restart, the commands to try and step-by-step checks with what a pass looks like; put the same checklist in `docs/目前进度.md`.**
-- Split of work: Claude codes on a branch, runs unit tests and pushes the branch; Ep pulls it on the PC, tests in Discord (often from the phone) and merges to main from the terminal (`git checkout main`, `git pull`, `git merge <branch>`, `git push`).
+- Split of work: Claude codes on a branch, runs unit tests and pushes the branch; Ep pulls it on the PC, tests in Discord (often from the phone) and merges to main from the terminal (`git checkout main`, `git pull`, `git merge origin/<branch>`, `git push`; merging the bare local branch name merges a stale copy).
 - Before trusting a test result, compare Ep's `git log --oneline -1` with the expected commit id. Read `bot-error.log` before any restart (a restart overwrites it).
 - Merge main into a branch before telling Ep it is ready.
 - Don't subscribe to PR activity while waiting on Ep. Don't wake idle work. Big changes at medium effort, small at low effort.
