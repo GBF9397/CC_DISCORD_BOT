@@ -210,6 +210,34 @@ async def test_persona_command_switches_and_shows(mock_api):
     assert said[-1][1] and "grumpy cat" in said[-1][0] and "pirate" in said[-1][0]
 
 
+async def test_bang_persona_switches_in_any_channel(mock_api, monkeypatch):
+    import bot as bot_module
+    from bot import PERSONA_USAGE
+    from core import PERSONAS
+
+    async def fake_search(query):
+        return "Furina is the Hydro Archon"
+    monkeypatch.setattr(bot_module, "web_search", fake_search)
+    bot = make_bot(mock_api.base_url)
+    ch = FakeChannel(999)  # not a bot channel: commands still work
+    msg = FakeMessage("！persona wuxia", ch)
+    await bot.on_message(msg)
+    assert bot.brain.persona(999) == PERSONAS["wuxia"] and "user1 switched me to **wuxia**" in msg.replies[-1]
+    msg = FakeMessage("!persona custom 一只爱吃鱼的猫", ch)
+    await bot.on_message(msg)
+    assert bot.brain.persona(999) == "一只爱吃鱼的猫"
+    mock_api.reply = "You are Furina."
+    msg = FakeMessage("!persona character 芙宁娜 原神", ch)
+    await bot.on_message(msg)
+    assert "**芙宁娜 原神**" in msg.replies[-1]
+    msg = FakeMessage("!persona", ch)
+    await bot.on_message(msg)
+    assert "Current personality" in msg.replies[-1]
+    msg = FakeMessage("!persona 芙宁娜", ch)
+    await bot.on_message(msg)
+    assert msg.replies[-1] == PERSONA_USAGE
+
+
 class FakeEmoji(SimpleNamespace):
     def __str__(self):
         return f"<a:{self.name}:42>"

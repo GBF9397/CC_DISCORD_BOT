@@ -66,7 +66,10 @@ NO_COMMENT_PERMISSION = ("I need the Manage Webhooks permission in this channel 
 # Text commands work in every channel, and also when typed with a full-width ！ or pasted as a /name line
 # (Discord sends a pasted slash command as plain text). Add new ! commands here.
 TEXT_COMMANDS = {"!ask", "!reset", "!draw", "!refine", "!recall", "!edit", "!style", "!search", "!event", "!poll",
-                 "!status", "!comment", "!dmdraw", "!dmedit", "!dmrefine", "!dmrecall"}
+                 "!status", "!comment", "!dmdraw", "!dmedit", "!dmrefine", "!dmrecall", "!persona"}
+PERSONA_USAGE = ("Write it as: !persona (shows the current one), !persona <preset>, !persona character <name game> "
+                 "or !persona custom <description>, e.g. !persona character 芙宁娜 原神\n"
+                 "格式：!persona 看当前人设；!persona 现成人设名；!persona character 角色 作品；!persona custom 描述")
 POLL_SPLIT = re.compile(r"[|/,，、｜／]")
 MEMBER_MENTION = re.compile(r"<@!?(\d+)>")
 POLL_VOTERS = "🗳️ Ends once these members have all voted 这些成员都投完就结束: "
@@ -477,6 +480,31 @@ class ChatBot(discord.Client):
         else:  # already queued, nothing to refine: only the member hears it
             await dm.send(notice)
 
+    def persona_text(self, channel_id):
+        return ("Current personality: " + self.brain.persona(channel_id) + "\nPresets: " + ", ".join(PERSONAS))
+
+    async def switch_persona(self, channel_id, who, preset=None, custom=None, character=None):
+        """Switch this channel's persona (/persona and !persona) and return the reply."""
+        if character:
+            name = character.strip()[:100]
+            log.info("Looking up character persona for channel %s", channel_id)
+            # Who they are, who they know (Gemma forgets teammates otherwise) and how they fight.
+            results = "\n\n".join([await web_search(f"{name} character personality speech style quotes"),
+                                    await web_search(f"{name} teammates friends relationships story"),
+                                    await web_search(f"{name} abilities techniques explained")])
+            text = await self.brain.character_persona(name, results)
+            if text is None:
+                return (f"Sorry, I couldn't find out enough about **{name}**. "
+                        "Try adding the game or show, e.g. 'Ganyu Genshin Impact'.")
+            self.brain.set_persona(channel_id, text, character=name)
+        elif custom:
+            name = "custom"
+            self.brain.set_persona(channel_id, custom.strip()[:CUSTOM_MAX_CHARS])
+        else:
+            name = preset
+            self.brain.set_persona(channel_id, PERSONAS[preset])
+        return f"{who} switched me to **{name}**. Memory of this channel cleared."
+
     async def status_text(self):
         stats = await asyncio.to_thread(monitor.read, 0.5)
         return "```\n" + "\n".join(monitor.lines(stats)) + "\n```"
@@ -699,35 +727,15 @@ class ChatBot(discord.Client):
                 await interaction.response.send_message("Sorry, you can't use this bot.", ephemeral=True)
                 return
             if character:
-                name = character.strip()[:100]
                 await interaction.response.defer(thinking=True)
-                log.info("Looking up character persona for channel %s", interaction.channel_id)
-                # Who they are, who they know (Gemma forgets teammates otherwise) and how they fight.
-                results = "\n\n".join([await web_search(f"{name} character personality speech style quotes"),
-                                        await web_search(f"{name} teammates friends relationships story"),
-                                        await web_search(f"{name} abilities techniques explained")])
-                text = await self.brain.character_persona(name, results)
-                if text is None:
-                    await interaction.followup.send(
-                        f"Sorry, I couldn't find out enough about **{name}**. "
-                        "Try adding the game or show, e.g. 'Ganyu Genshin Impact'.")
-                    return
-                self.brain.set_persona(interaction.channel_id, text, character=name)
-                await interaction.followup.send(
-                    f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
+                await interaction.followup.send(await self.switch_persona(
+                    interaction.channel_id, interaction.user.display_name, character=character))
                 return
-            if custom:
-                text, name = custom.strip()[:CUSTOM_MAX_CHARS], "custom"
-            elif preset:
-                text, name = PERSONAS[preset.value], preset.value
-            else:
-                await interaction.response.send_message(
-                    "Current personality: " + self.brain.persona(interaction.channel_id)
-                    + "\nPresets: " + ", ".join(PERSONAS), ephemeral=True)
+            if not (custom or preset):
+                await interaction.response.send_message(self.persona_text(interaction.channel_id), ephemeral=True)
                 return
-            self.brain.set_persona(interaction.channel_id, text)
-            await interaction.response.send_message(
-                f"{interaction.user.display_name} switched me to **{name}**. Memory of this channel cleared.")
+            await interaction.response.send_message(await self.switch_persona(
+                interaction.channel_id, interaction.user.display_name, preset=preset and preset.value, custom=custom))
 
         @self.tree.command(name="status", description="Show how busy the bot's PC is (graphics card, CPU, RAM)")
         async def status(interaction: discord.Interaction):
@@ -960,6 +968,22 @@ class ChatBot(discord.Client):
         if command == "!reset":
             self.memory.reset(message.channel.id)
             await message.reply("Memory for this channel cleared.", mention_author=False)
+            return
+        if command == "!persona":
+            kind, _, value = rest.partition(" ")
+            kind, value = kind.strip("|｜").lower(), value.strip(" |｜")
+            if not rest:
+                reply = self.persona_text(message.channel.id)
+            elif kind in PERSONAS and not value:
+                reply = await self.switch_persona(message.channel.id, message.author.display_name, preset=kind)
+            elif kind in ("character", "角色") and value:
+                async with message.channel.typing():
+                    reply = await self.switch_persona(message.channel.id, message.author.display_name, character=value)
+            elif kind in ("custom", "自定义") and value:
+                reply = await self.switch_persona(message.channel.id, message.author.display_name, custom=value)
+            else:
+                reply = PERSONA_USAGE
+            await message.reply(reply, mention_author=False)
             return
         if command == "!event" and message.guild is not None:
             if not rest:  # nothing typed: offer the form with menus
