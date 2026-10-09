@@ -1,6 +1,6 @@
 # Project notes (for Claude sessions)
 
-Any Claude session (new or old) reads this file first. It holds only the rules and the setup; everything else lives in five files under `docs/`.
+Any Claude session (new or old) reads this file first. It holds only the rules and the setup; everything else lives in files under `docs/`.
 
 Last updated 2026-10-09
 
@@ -10,6 +10,7 @@ Last updated 2026-10-09
 3. **`docs/版本更新内容（已归档和刚完成）.md`** - what each version added, how Ep tests and releases, how the image pipeline works, and the **latest member announcement** (only the newest one is kept). Read once; later only new parts. New work goes under the next version (v1.5).
 4. **`docs/指令.md`** - the current full command list, ready to paste into Discord. Edit single lines when commands change; never regenerate it.
 5. **`docs/计划文件.md`** - Ep's plans: 【/】 done, 【】 not yet. Add every new plan Ep mentions.
+6. **`docs/终端指令.md`** - for Ep: PowerShell commands (start/stop, logs, git, venv). Keep it in sync when commands change.
 
 Keep these files current as you learn and build more: they are how sessions reuse past experience instead of rediscovering it. Don't let this file grow again; put state, history and fixes in the files above.
 
