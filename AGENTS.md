@@ -16,6 +16,7 @@ Keep these files current as you learn and build more: they are how sessions reus
 ## Owner and language
 - Owner: Ep (GitHub GBF9397). Repo: GBF9397/CC_DISCORD_BOT.
 - Talk to Ep in Chinese: short, conclusion first, one concise step list rather than long explanations.
+- Chat replies to Ep use the same visual style as the docs: headings for sections, tables and point form, blank lines between blocks, code format only for code (commands, file names, commit ids, `.env` keys).
 - Work on branches. Ask Ep before pushing to main or merging.
 
 ## What the bot is
