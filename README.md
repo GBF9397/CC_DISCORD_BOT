@@ -1,75 +1,263 @@
-# Discord bot on the local Gemma 4 Bionic model
+# 🤖 Gemma 4 Discord Bot
 
-Answers in Discord using `gemma4-12b-bionic-v2` served by LM Studio. The model gets no tools; for current questions the bot searches the web (free DuckDuckGo, no API key) and passes the results to the model.
+A fun Discord bot for chatting with server members, running fully on one PC.
 
-## How members use it
-Every command also works as one pasted message in any channel: start it with `!`, a full-width `！`, or `/` (a pasted `/draw a cat` line arrives as plain text and still works), e.g. `!draw a cat`, `！search 天气`, `!ask hi`, `!reset`, `!poll 今晚吃什么 | 炒饭，煎蛋 | @Daddy宏`, `!event 电影夜 | 10-10 | 8:30pm | 语音频道`. Outside the `BOT_CHANNEL_ID` channels the bot only answers these commands and @mentions.
-- `/ask question:<text>` - any member can ask (slash command).
-- `@Bot <text>` - mention the bot in any channel.
-- Any message in the channels listed in `BOT_CHANNEL_ID` (comma-separated).
-- Attach images (PNG, JPEG, WebP) to a message the bot answers and it looks at them. Images are only held in RAM for that one request, never saved.
-- `/search question:<text>` or `!search <text>` - look it up on the web first, then answer.
-- `/draw request:<text>` or `!draw <text>` - draw a picture, when `IMAGE_GEN=on` (see below).
-- `/refine changes:<text>` or `!refine <text>` - change your last picture in this channel.
-- `/recall` or `!recall` - undo: drop your newest picture (the one you didn't like) and go back to the one before; your next `/refine` starts from it with a fresh try, so the same words give a new picture instead of the one you dropped.
-- `/edit image:<upload> changes:<text>` or `!edit <text>` with a picture attached - redraw an uploaded picture with the changes. Attach up to 3 more pictures of one character (or `character:` in `/edit`) to put that character into the first one: the first keeps its clothes, pose and background, the person takes the character's looks.
-- `/dmdraw`, `/dmedit`, `/dmrefine`, `/dmrecall` or `!dmdraw`, `!dmedit`, `!dmrefine`, `!dmrecall` - the same, but private: the bot first sends you a DM (if it can't, it says so and draws nothing), deletes your `!dm…` message if it has Manage Messages in that channel (otherwise it tells you by DM; the `/dm…` forms are always hidden, answered only to you), and sends the picture only by DM. The channel just sees "🎨 Drawing a private request..." with no name. Private pictures have their own history: `!recall` doesn't show them, `!dmrecall` undoes the newest by DM and `!dmrefine` changes them. A two-picture `!dmedit` works like `!edit`. They keep the channel's drawing style.
-- `/drawstyle style:<anime|realistic>` or `!style <anime|realistic>` - switch the drawing model for this channel.
-- `/reset` or `!reset` - forget this channel's conversation.
-- `/comment <text>` (or `!comment <text>`) - members talking among themselves: the bot doesn't reply and doesn't remember it. It reposts the words under the member's name and avatar without the command, so it reads like normal chat. Needs the bot to have Manage Messages and Manage Webhooks; without them a typed `!comment` stays as it was.
-- `/poll question:<text> options:<a | b | c> members:<@a @b>` - post a Discord poll (up to 10 answers split by `|`, `,`, `/`, `、` or full-width `，｜／`; leave `options` empty for 是/不是). With `members`, the bot pings them and ends the poll as soon as every one of them has voted (others can still vote, since Discord polls can't limit voters). `hours` sets how long it stays open: by default 1 day without `members`, 7 days with them. `multiple` lets members pick several answers. Only the member who started the poll can press its **End poll** button; the bot then posts the vote counts so far. Needs no Gemma, so it works while the bot is drawing.
-- `/event name:<text> date:<2026-10-10 or 10-10> time:<20:30, 8:30pm or 晚上8:30> place:<text>` - create a server event (Discord's Events list) with optional `hours` (default 2) and `details`. The time is read in the bot PC's time zone; Discord shows it to each member in theirs. Or paste it as one message in any channel (`!event`, `！event` or `/event` all work): `!event 电影夜 | 10-10 | 8:30pm | 语音频道` (add `| hours | details` if wanted). The parts can come in any order: date, time and hours (`3`, `2小时`, `两个小时`) are recognised by their look, and of the rest the first is the name, the second the place. Only the member who made the event can press **End event** under the bot's message (cancels it if it hasn't started). Members click **Interested** on the event to get Discord's reminder. The bot needs the **Create Events** permission in that server. Easier: send `!event` (or `/event`) alone, type the name, place and details in the form, then pick the date (next 25 days), hour, minute (00/15/30/45) and length (default 2 hours) from menus and press **Create**; only you see the menus.
-- `/status` or `!status` - show how busy the PC is: bars for graphics card load and memory, CPU and RAM, with what's free (only the asker sees `/status`; `!status` is posted in the channel). It refreshes about every 3 seconds for a minute, and works while pictures are being drawn.
-- The bot uses the server's own custom emoji (animated ones too) in its replies now and then, and, if `STICKERS=on` is in `.env` (off by default), once in a while sends one of the server's stickers. On startup it shows each emoji (and sticker, when on) picture to Gemma once to learn what it means (kept in RAM only), and it remembers the last 2 short messages where members used each one (RAM only, gone on restart), so it can pick one that fits the mood.
-- `/persona` - change the bot's personality in this channel: pick a `preset` (buddy, tsundere, wuxia, pirate, roast) or write your own with `custom`, or play a known character with `character` (e.g. `Ganyu Genshin Impact`): the bot searches the web for them and turns what it finds into a personality. With no options it shows the current one. Text form: `!persona` (current), `!persona wuxia`, `!persona character 芙宁娜 原神`, `!persona custom 一只爱吃鱼的猫`. Switching clears the channel's memory. Personalities live in RAM, so a restart goes back to buddy. A `character` persona also looks things up on its own, quietly: when a message asks about facts (what, who, where, 叫什么, 是谁, 哪里 ...) it searches the character's name plus the question first, and every 8 messages it re-reads who the character is, so it stays accurate and in character without anyone typing `/search`. Results are used for that one answer only and never saved.
+- **Brain:** local `gemma4-12b-bionic-v2` (with vision) in LM Studio
+- **Drawing:** ComfyUI on the same PC, taking turns with Gemma on the graphics card
+- **Search:** free DuckDuckGo (no API key), with backup engines
+- **Privacy:** nothing from Discord is saved to disk
 
-Questions that sound time-sensitive (today, latest, news, price, weather, score, a year like 2026, 今天, 最新, 新闻, 价格, 天气 ...) are searched automatically. Search results are used for that one answer only and are never saved.
+<br>
 
-The bot remembers the last 30 messages per channel (in RAM, trimmed to ~9000 tokens; set LM Studio's context length to 16384 or more), answers one request at a time in order, shows "typing...", splits replies over 2000 characters, and says so politely if LM Studio is offline.
+## 💬 Commands
 
-## Drawing pictures (optional)
-Set `IMAGE_GEN=on` in `.env` and restart, and members can use `/draw request:<text>` or `!draw <text>`. The graphics card takes turns: Gemma turns the request into a Stable Diffusion prompt, then is unloaded from LM Studio (`lms unload`); ComfyUI draws the picture, then frees its model; Gemma is loaded back (`lms load` with `LMSTUDIO_CONTEXT`) and the bot posts the picture. Picture requests queue up, one per member: a member can ask again only after their picture is posted. A request made while the bot is busy gets a "Queued, N ahead of you" notice. The bot draws every queued picture before it loads Gemma back (Gemma only comes back briefly to write prompts for requests that arrived meanwhile), and until the queue is empty it ignores everything except picture requests. If anything fails, Gemma is still reloaded and the bot says what went wrong. While ComfyUI draws, the bot edits its "Drawing..." notice to show the progress (a bar and a percentage, every 10%). The notice also gives an estimate of the wait (`⏱️ 预计 2 分 30 秒`), worked out from how long this PC took for its last 5 pictures: Gemma writing the prompt (timed separately for new pictures, refines and edits, since pictures to look at take longer), swapping Gemma and ComfyUI on the graphics card, and drawing. The timings live in RAM, so the first picture after a restart says it is being timed instead. Before that, while Gemma writes the prompt, the notice counts down every 15 seconds to when the bot gives up: Gemma gets one try of at most 5 minutes (`IMAGE_PROMPT_TIMEOUT` in `core.py`), then the member is told it took too long. Uploaded and looked-up pictures are first shrunk in RAM to at most 1024 pixels on the long side (Pillow), so big uploads don't slow Gemma down; ComfyUI gets the same small copy.
+Every command works in **any channel**, in two forms:
 
-ComfyUI has no internet, so when a request names a specific character, person, place, product or artwork, Gemma first looks it up on the web, even when it thinks it knows the name, since it often guesses wrong: a text search plus up to five pictures (the same free DuckDuckGo search as `/search`, safe search on, once per picture). Gemma reads the text, keeps only the pictures that match it (some may show other characters from the same series), and writes the prompt from what they show. The anime model only knows characters from before 2025, so for newer ones the prompt leaves out the name and series and describes the looks alone; otherwise the model draws another character it knows from that series. Results and pictures stay in RAM for that one prompt and are never saved.
+- a slash command: `/draw a cat`
+- one line of text: `!draw a cat` (also `！draw` or a pasted `/draw` line)
 
-`/refine` (or `!refine`) changes the member's own last picture in that channel, so two members refining at once never build on each other's pictures. Members only write the change ("natural skin"), never the whole description again: Gemma looks at the picture and its tags and replies with just the edits (`ADD: medium hair REMOVE: short hair, bob cut AVOID: SIZE: medium`), and the bot applies them, so every tag nobody mentioned stays exactly as it was, round after round, and the prompt doesn't grow. The added tags get extra weight for that round; removed and avoided tags go into the negative prompt and stay there (the last 12) so they can't creep back. Gemma uses the drawing model's own words (hair: very short, short, medium = shoulders, long, very long = waist; "a bit longer" moves one step; color codes become color names). The new picture is redrawn from the last one, only as much as the change needs (SIZE small/medium/big = 55/60/75%), so the parts that were fine stay fine; SIZE new draws again from scratch with the same seed. If ComfyUI doesn't have the bot's node yet, a refine draws again with the same seed. Each member's last 5 pictures per channel are kept in RAM. `/recall` (or `!recall`) undoes the newest one: it is dropped, the one before is shown, and the next `/refine` builds on it with a new seed (the same picture, prompt and seed would draw the dropped one again exactly). A restart forgets them all.
+Fields are split with `|`, e.g. `!poll 今晚吃什么 | 炒饭，煎蛋`.
 
-`/edit` (or `!edit <changes>` with a picture attached) redraws an uploaded picture: Gemma looks at it and writes the prompt with the change, and ComfyUI redraws it partly (`EDIT_STRENGTH` 0.6 in `imagegen.py`), so the shape stays and the asked-for details change. Gemma also says how big the change is (the same SIZE scale as `/refine`; a new hair color is big, 75%), and when a big area gets a new color it adds RECOLOR: the bot then takes most of the old color out of the picture (`KEEP_COLOR` 0.35) and draws the outlines darker, and ComfyUI redraws only 60% of it (`RECOLOR_STRENGTH`; a two-picture swap keeps 75%), so the new color can win while hair and a similar-looking background stay apart. When a change goes against how a named character usually looks, the name is left out and the looks are described, since the drawing model always draws a named character their usual way. Plain redrawing can't both change a big colour and keep the character; for that, put a canny ControlNet for SDXL (for example xinsir's controlnet-canny-sdxl-1.0) in `ComfyUI/models/controlnet` and its file name in `SD_CONTROLNET`: a recolor then follows the picture's outlines (Canny, built into ComfyUI) and redraws 90%. If ComfyUI doesn't list that file, recolors go on without it. With more pictures (up to 3 of the same character; several angles help), Gemma sees them all and writes the first one's outfit and pose with the character's name and looks (hair, eyes, face, horns, ornaments) first and weighted 1.3, and the first picture's own hair and eyes in the negative prompt; ComfyUI redraws more of it (`SWAP_STRENGTH` 0.75, or 90% loosely following the first picture's outlines when `SD_CONTROLNET` is set: weight 0.5 for the first 60% of the steps); the character pictures only go to Gemma, in RAM, and is dropped once read. It works from Gemma's description, so colours and clear features carry over better than the exact face. ComfyUI's own image loader needs the picture saved in its input folder, so the bot instead sends it inside the job to a small node, `comfy_node.py`, which the bot copies into `ComfyUI/custom_nodes` at startup when `COMFYUI_DIR` is set (otherwise copy it there by hand). ComfyUI reads new nodes only when it starts, so restart it once after updating.
+<br>
 
-Two styles: `SD_CHECKPOINT` is `anime` (the default) and `SD_CHECKPOINT_REALISTIC`, if set, adds `realistic`. Members switch a channel with `/drawstyle` or `!style realistic`; the choice is kept in RAM and a restart goes back to anime. A single request can also start with the style, e.g. `!draw realistic a sports car`. Each queued picture keeps the style it was asked with, and pictures are drawn first come, first served. `/refine` uses the model the picture was drawn with, unless the change starts with a style name or the channel's style was switched since. Gemma is told which model will draw: for `realistic` it writes a photo description without anime tags (a character from an anime or game becomes a real person in cosplay), and anime, illustration and cel shading go into the negative prompt. Realistic pictures use DPM++ 2M Karras, 30 steps, CFG 4.5, the settings Juggernaut XL is made for.
+### Chat
 
-Setup: install ComfyUI and keep it running (it uses almost no graphics memory while idle), or put its `ComfyUI_windows_portable` folder in `COMFYUI_DIR` and the bot starts it in the background, with no window, the first time someone asks for a picture (it then stays running); put one model in its `models/checkpoints` folder, and put that file name in `SD_CHECKPOINT`. Use `IMAGE_SIZE=1024` for SDXL models, `512` for SD 1.5. The `lms` command must work in the bot's terminal. Pictures are never written to disk: ComfyUI sends each one straight to the bot over its websocket (the `SaveImageWebsocket` node, which ships with ComfyUI in `custom_nodes/websocket_image_save.py`), and the bot keeps it in RAM only until it is posted. Hard limits: no sexual pictures involving anyone who is or looks under 18, and no sexual or degrading pictures of real people.
+| Command | What it does |
+|---|---|
+| `/ask` · `!ask` | Ask the bot anything |
+| `@bot` | Same as `/ask`, in any channel |
+| `/search` · `!search` | Search the web first, then answer |
+| `/comment` · `!comment` | Talk to members only: bot doesn't reply or remember |
+| `/reset` · `!reset` | Clear this channel's memory |
+| `/persona` · `!persona` | Change personality (preset, custom or a known character) |
 
-## Monitor window
-When the bot starts it opens a small always-on-top window with the same numbers as `/status`, updated every second. It runs as a second `python.exe` that closes when the bot stops (`Stop-Process -Name python` ends both). Put `MONITOR_WINDOW=off` in `.env` to leave it out. Graphics card readings come from `nvidia-smi`, which ships with the NVIDIA driver.
+<br>
 
-## Unfiltered mode (optional)
-Set `UNFILTERED_MODE=on` in `.env` and restart to loosen the bot's style: swearing, crude and dark humor, harsher roasts, mature topics, blunt opinions, and far fewer refusals or safety disclaimers. It is off by default. Hard limits stay: no sexual content involving minors, no real-world instructions for weapons or serious harm, no doxxing or harassing real people. Gemma has its own built-in caution, so a prompt can only loosen it so far; to go further, load a less filtered model in LM Studio and put its id in `LMSTUDIO_MODEL` (no code change). Keep anything sexual to Discord age-restricted channels.
+### Drawing
 
-## Emoji meanings by hand (optional)
-If the bot misreads an emoji or sticker, create `emoji_meanings.txt` next to `bot.py` (it is gitignored) with one line per emoji, using its Discord name:
+| Command | What it does |
+|---|---|
+| `/draw` · `!draw` | Draw a picture (`!draw realistic ...` for photo style) |
+| `/refine` · `!refine` | Change your last picture |
+| `/recall` · `!recall` | Undo your newest picture |
+| `/edit` · `!edit` | Change an uploaded picture, or swap in a character |
+| `/drawstyle` · `!style` | Switch this channel to anime or realistic |
+| `/dmdraw` `/dmedit` `/dmrefine` `/dmrecall` | Private versions: request hidden, picture by DM |
+
+<br>
+
+### Tools
+
+| Command | What it does |
+|---|---|
+| `/poll` · `!poll` | Discord poll; ends when all named members voted |
+| `/event` · `!event` | Server event; `!event` alone opens a form |
+| `/status` · `!status` | Live bars for GPU, CPU and RAM |
+
+> Full Chinese command list for members: [`docs/指令.md`](docs/指令.md)
+
+<br>
+
+## 🧠 How chatting works
+
+### Where it answers
+
+- **Bot channels** (`BOT_CHANNEL_ID`): every message
+- **Other channels:** only commands and @mentions
+
+<br>
+
+### Memory
+
+- Last **30 messages** per channel, in RAM only
+- Gone on restart or `/reset`
+
+<br>
+
+### Web search
+
+- Runs by itself for time-sensitive questions (today, latest, price, weather, 今天, 最新 ...)
+- Results are used for one answer, never saved
+
+<br>
+
+### Personas
+
+| Type | Example |
+|---|---|
+| Preset | `!persona wuxia` (buddy, tsundere, wuxia, pirate, roast) |
+| Custom | `!persona custom 一只爱吃鱼的猫` |
+| Character | `!persona character 芙宁娜 原神` |
+
+- Characters are looked up on the web: personality, teammates, rivals, abilities
+- They look facts up again when asked, and refresh who they are every 8 messages
+- Switching clears the channel's memory; a restart goes back to buddy
+
+<br>
+
+### Extras
+
+- Uses the server's own **emoji** now and then, learning what each one means
+- **Stickers** are off by default (`STICKERS=on` turns them on)
+- Reply length is capped at a random 10 / 30 / 50 / 100 (not for search answers)
+
+<br>
+
+## 🎨 How drawing works
+
+### The flow
+
+1. Gemma writes the picture prompt (looks up named characters on the web first)
+2. Gemma is unloaded from the graphics card
+3. ComfyUI draws the picture
+4. Gemma is loaded back and the picture is posted
+
+> While drawing, the bot answers only picture requests and `!status`.
+
+<br>
+
+### Queue
+
+- One picture per member at a time, first come, first served
+- The notice shows the queue, an **estimated wait**, a countdown and progress
+- Each member has their own last 5 pictures per channel (private ones kept apart)
+
+<br>
+
+### Editing pictures
+
+| Action | How much is redrawn |
+|---|---|
+| Small change (expression, lighting) | 55% |
+| Medium change (hairstyle, clothes, background) | 60% |
+| Big change (hair colour, pose, framing) | 75% |
+| New colour on a big area, with ControlNet | 90%, following the outlines |
+| Character swap (up to 3 character pictures) | 75%, or 90% with ControlNet |
+
+- Things you didn't mention keep their exact tags and weights
+- `!recall` drops the newest picture; the next refine tries a new seed
+
+> Full pipeline details: [`docs/版本更新内容（已归档和刚完成）.md`](docs/版本更新内容（已归档和刚完成）.md)
+
+<br>
+
+### Styles
+
+| Style | Model | Notes |
+|---|---|---|
+| anime (default) | `SD_CHECKPOINT` | e.g. animagine-xl-4.0 |
+| realistic | `SD_CHECKPOINT_REALISTIC` | e.g. Juggernaut XL; anime characters become cosplay |
+
+<br>
+
+### Hard limits
+
+- No sexual pictures of anyone who is or looks under 18
+- No sexual or degrading pictures of real people
+
+<br>
+
+## 🔒 Privacy
+
+- No messages, images or conversation logs are saved
+- Pictures go ComfyUI → bot RAM → Discord (never to disk)
+- Logs never contain message content or search terms
+
+<br>
+
+## ⚙️ Setup (Windows)
+
+### 1. LM Studio
+
+- Load `gemma4-12b-bionic-v2`, then run `lms server start`
+- Context length **16384+**
+
+<br>
+
+### 2. Discord bot
+
+- Developer Portal → New Application → Bot → turn on **Message Content Intent** → copy the token
+- OAuth2 URL scopes: `bot`, `applications.commands`
+- Permissions: Send Messages, Read Message History, Send Polls, Create Events
+- Also for `!comment` and `!dm…`: Manage Messages, Manage Webhooks
+
+<br>
+
+### 3. Install
+
+```
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env
+```
+
+- Put the token in `.env` only (never in chat or commits)
+- Start: `python bot.py` (slash commands may take a few minutes to appear)
+
+<br>
+
+### 4. Drawing (optional)
+
+- Install ComfyUI and put a model in `models/checkpoints`
+- Or set `COMFYUI_DIR` and the bot starts ComfyUI itself
+- The `lms` command must work in the bot's terminal
+- Restart ComfyUI once after `comfy_node.py` changes
+
+<br>
+
+### `.env` keys
+
+| Key | Purpose |
+|---|---|
+| `DISCORD_TOKEN` | Bot token (required) |
+| `LMSTUDIO_BASE_URL` · `LMSTUDIO_MODEL` | LM Studio server and model |
+| `BOT_CHANNEL_ID` | Channels answered in full (one line, comma-separated) |
+| `ALLOWED_USER_IDS` | Limit who can use the bot (empty = everyone) |
+| `UNFILTERED_MODE` | `on` = looser replies (private servers only) |
+| `STICKERS` | `on` = sometimes send server stickers |
+| `MONITOR_WINDOW` | `off` = no PC monitor window |
+| `IMAGE_GEN` | `on` = drawing commands |
+| `COMFYUI_URL` · `COMFYUI_DIR` | ComfyUI address and folder |
+| `SD_CHECKPOINT` · `SD_CHECKPOINT_REALISTIC` | Anime and realistic models |
+| `SD_CONTROLNET` | Optional canny ControlNet (SDXL) for colour changes |
+| `IMAGE_SIZE` | 1024 for SDXL, 512 for SD 1.5 |
+| `LMSTUDIO_CONTEXT` | Context Gemma is reloaded with (16384+) |
+
+<br>
+
+## 🧩 Optional extras
+
+### Monitor window
+
+- Small always-on-top window with the `/status` numbers
+- Closes with the bot; `MONITOR_WINDOW=off` turns it off
+
+<br>
+
+### Unfiltered mode
+
+- `UNFILTERED_MODE=on`: swearing, dark humour, mature topics, fewer refusals
+- Hard limits stay: nothing sexual with minors, no harm instructions, no doxxing
+
+<br>
+
+### Emoji meanings by hand
+
+Create `emoji_meanings.txt` next to `bot.py` (gitignored), one line per emoji:
+
 ```
 catstare: speechless at nonsense
 awkward_girl: awkward
-middlefinger: rude, playful f-you
 ```
-Lines win over the bot's own guess and take effect on the next reply, no restart needed.
 
-## Setup (Windows)
-1. LM Studio: load `gemma4-12b-bionic-v2`, then `lms server start` (serves `http://localhost:1234/v1`).
-2. Discord Developer Portal: New Application > Bot > turn on **Message Content Intent** > Reset Token and copy it.
-3. OAuth2 > URL Generator: scopes `bot` and `applications.commands`; permissions Send Messages, Read Message History, Send Polls, Create Events. Open the URL to invite the bot.
-4. In this folder:
-   ```
-   py -3.12 -m venv .venv
-   .venv\Scripts\activate
-   pip install -r requirements.txt
-   copy .env.example .env
-   ```
-   Paste the token into `.env` (never into a chat, never commit it; `.env` is gitignored).
-5. `python bot.py`
+<br>
 
-Slash commands can take a few minutes to appear the first time.
+## 🧪 Tests
 
-## Tests
-`pip install -r requirements-dev.txt` then `pytest`. The tests run the bot against a mock LM Studio server, so neither Discord nor LM Studio is needed.
+```
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+- Runs against a mock LM Studio server: no Discord, LM Studio or GPU needed
