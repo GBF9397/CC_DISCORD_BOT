@@ -170,7 +170,7 @@ Fields are split with `|`, e.g. `!poll 今晚吃什么 | 炒饭，煎蛋`.
 ### 1. LM Studio
 
 - Load `gemma4-12b-bionic-v2`, then run `lms server start`
-- Context length **16384+**
+- Context length: `16384` or more
 
 <br>
 
@@ -221,8 +221,8 @@ copy .env.example .env
 | `COMFYUI_URL` · `COMFYUI_DIR` | ComfyUI address and folder |
 | `SD_CHECKPOINT` · `SD_CHECKPOINT_REALISTIC` | Anime and realistic models |
 | `SD_CONTROLNET` | Optional canny ControlNet (SDXL) for colour changes |
-| `IMAGE_SIZE` | 1024 for SDXL, 512 for SD 1.5 |
-| `LMSTUDIO_CONTEXT` | Context Gemma is reloaded with (16384+) |
+| `IMAGE_SIZE` | `1024` for SDXL, `512` for SD 1.5 |
+| `LMSTUDIO_CONTEXT` | Context Gemma is reloaded with (`16384` or more) |
 
 <br>
 
